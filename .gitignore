@@ -11,3 +11,6 @@ dist/
 
 # IDE
 *.code-workspace
+
+# build logs
+plugin/build_out*.log
