@@ -1,0 +1,13 @@
+# xmake / build output
+plugin/build/
+plugin/.xmake/
+plugin/vsxmake*/
+plugin/.vs/
+
+# compiled papyrus (build artifact)
+Scripts/*.pex
+
+# packaging output
+dist/
+*.7z
+*.zip

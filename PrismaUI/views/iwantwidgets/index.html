@@ -1,0 +1,541 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>iWant Widgets - Prisma Edition</title>
+<style>
+  html, body {
+    margin: 0; padding: 0; width: 100%; height: 100%;
+    overflow: hidden; background: transparent;
+    user-select: none; pointer-events: none;
+  }
+  /* Virtual 1280x720 Flash stage. Skyrim scaled the Flash stage by height and
+     centered it horizontally; we reproduce that so every coordinate consumers
+     ever stored keeps meaning exactly what it meant. */
+  #stage {
+    position: absolute; top: 0; left: 50%;
+    width: 1280px; height: 720px;
+    transform-origin: top center;
+  }
+  .w { position: absolute; }
+  .wc { position: absolute; left: 0; top: 0; transform: translate(-50%, -50%); }
+  .wc img, .wc .tint { display: block; }
+  .wc .txt {
+    color: #FFFFFF; white-space: pre; text-align: center;
+    text-shadow: 1px 1px 2px rgba(0,0,0,0.75);
+    line-height: 1.1;
+  }
+  .meter {
+    box-sizing: border-box; width: 334px; height: 30px;
+    border: 2px solid rgba(230,230,230,0.55); border-radius: 4px;
+    background: rgba(0,0,0,0.45); overflow: hidden; position: relative;
+  }
+  .meter .fill {
+    position: absolute; top: 0; bottom: 0; left: 0; width: 100%;
+  }
+  .meter .flash {
+    position: absolute; inset: 0; opacity: 0; background: #7f7f7f;
+  }
+  @keyframes meterflash {
+    0% { opacity: 0; } 25% { opacity: 0.85; } 100% { opacity: 0; }
+  }
+</style>
+</head>
+<body>
+<div id="stage"></div>
+<script>
+'use strict';
+
+/* ========================================================================
+ * iWant Widgets - Prisma Edition view.
+ * JS port of DaemonPrime's iWantWidgets.as (MIT). Widget model preserved:
+ * a widget is an outer node positioned so (x, y) is its CENTER (the Flash
+ * original nested a clip offset by -w/2,-h/2), with rotation/scale/alpha on
+ * the outer node.
+ *
+ * The DLL drives everything through InteropCall("iwCall", json) and receives
+ * size updates through the registered "iwMetrics" listener.
+ * ======================================================================== */
+
+const stage = document.getElementById('stage');
+const widgets = new Map();      // id -> state
+let lowestWidget = 0;           // ids below this are from before the last reset
+let zTop = 1;
+let zBottom = 0;
+
+function scaleStage() {
+  const s = window.innerHeight / 720;
+  stage.style.transform = 'translateX(-50%) scale(' + s + ')';
+}
+window.addEventListener('resize', scaleStage);
+scaleStage();
+
+/* ---------- fonts ---------- */
+/* Skyrim resolves $-aliases through fontconfig.txt; map the common ones to
+   CSS stacks. Drop matching .ttf files next to this file and extend the map
+   with @font-face for pixel-perfect matches. */
+const FONTS = {
+  '$everywherefont':       "'Futura Condensed', 'Arial Narrow', 'Segoe UI', sans-serif",
+  '$everywhereboldfont':   "'Futura Condensed', 'Arial Narrow', 'Segoe UI', sans-serif",
+  '$everywheremediumfont': "'Futura Condensed', 'Arial Narrow', 'Segoe UI', sans-serif",
+  '$consolefont':          "Consolas, monospace",
+  '$startmenufont':        "'Futura Condensed', 'Arial Narrow', sans-serif",
+  '$dragonfont':           "serif",
+  '$skyrimbooks':          "Georgia, serif",
+  '$handwrittenfont':      "cursive"
+};
+function mapFont(f) {
+  return FONTS[String(f).toLowerCase()] || (f + ", 'Arial Narrow', sans-serif");
+}
+
+/* ---------- registry / DOM ---------- */
+function makeWidget(id, type, x, y, visible) {
+  const el = document.createElement('div');
+  el.className = 'w';
+  const inner = document.createElement('div');
+  inner.className = 'wc';
+  el.appendChild(inner);
+  stage.appendChild(el);
+  const w = {
+    id, type, el, inner,
+    x, y, xscale: 100, yscale: 100, rotation: 0, alpha: 100,
+    visible: !!visible, tint: null,
+    cw: 0, ch: 0,                    // content size in px (pre-scale)
+    z: ++zTop,
+    meter: null, src: null, fontCss: '', fontSize: 0
+  };
+  widgets.set(id, w);
+  applyAll(w);
+  return w;
+}
+
+function applyAll(w) {
+  w.el.style.left = w.x + 'px';
+  w.el.style.top = w.y + 'px';
+  w.el.style.transform = 'rotate(' + w.rotation + 'deg) scale(' + (w.xscale / 100) + ',' + (w.yscale / 100) + ')';
+  w.el.style.opacity = Math.max(0, Math.min(100, w.alpha)) / 100;
+  w.el.style.visibility = w.visible ? 'visible' : 'hidden';
+  w.el.style.zIndex = w.z;
+}
+
+function pushMetrics(w) {
+  // getXsize/getYsize in Flash returned the outer _width/_height, i.e. the
+  // scaled size. Mirror that.
+  if (typeof window.iwMetrics === 'function') {
+    window.iwMetrics(JSON.stringify({
+      id: w.id,
+      w: Math.round(w.cw * w.xscale / 100),
+      h: Math.round(w.ch * w.yscale / 100)
+    }));
+  }
+}
+
+function measureText(w) {
+  w.cw = w.inner.firstChild.offsetWidth;
+  w.ch = w.inner.firstChild.offsetHeight;
+  pushMetrics(w);
+}
+
+function setContentSize(w, cw, ch) {
+  w.cw = cw; w.ch = ch;
+  const c = w.inner.firstChild;
+  if (c) { c.style.width = cw + 'px'; c.style.height = ch + 'px'; }
+  pushMetrics(w);
+}
+
+/* Tinting reproduces Flash's ColorTransform.rgb: the whole widget renders as
+   a flat color, silhouetted by its own alpha channel. */
+function applyTint(w) {
+  if (w.type !== 'image') {
+    if (w.type === 'text' && w.tint) w.inner.firstChild.style.color = w.tint;
+    return;
+  }
+  const c = w.inner.firstChild;
+  if (!c) return;
+  if (w.tint) {
+    if (c.tagName === 'IMG') {
+      const d = document.createElement('div');
+      d.className = 'tint';
+      d.style.width = w.cw + 'px';
+      d.style.height = w.ch + 'px';
+      d.style.webkitMaskImage = 'url(' + w.src + ')';
+      d.style.maskImage = 'url(' + w.src + ')';
+      d.style.webkitMaskSize = '100% 100%';
+      d.style.maskSize = '100% 100%';
+      w.inner.replaceChild(d, c);
+    }
+    w.inner.firstChild.style.backgroundColor = w.tint;
+  }
+}
+
+function shouldDraw(id, skipInvisible, skipAlpha0) {
+  if (id < lowestWidget) return false;
+  const w = widgets.get(id);
+  if (!w) return false;                 // matches Flash reading an undefined clip
+  if (skipInvisible && !w.visible) return false;
+  if (skipAlpha0 && w.alpha === 0) return false;
+  return true;
+}
+
+/* ---------- tween engine (Penner easings, TweenMax-style overwrite) ---------- */
+const tweens = new Map();               // "id:attr" -> handle
+
+const EASE = {
+  none:    { easeIn: t => t, easeOut: t => t, easeInOut: t => t },
+  regular: {
+    easeIn: t => t * t,
+    easeOut: t => t * (2 - t),
+    easeInOut: t => t < .5 ? 2 * t * t : -1 + (4 - 2 * t) * t
+  },
+  strong: {
+    easeIn: t => Math.pow(t, 5),
+    easeOut: t => 1 - Math.pow(1 - t, 5),
+    easeInOut: t => t < .5 ? 16 * Math.pow(t, 5) : 1 - 16 * Math.pow(1 - t, 5)
+  },
+  back: {
+    easeIn: t => t * t * (2.70158 * t - 1.70158),
+    easeOut: t => 1 + (t - 1) * (t - 1) * (2.70158 * (t - 1) + 1.70158),
+    easeInOut: t => t < .5
+      ? (2 * t) * (2 * t) * (3.5949095 * 2 * t - 2.5949095) / 2
+      : ((2 * t - 2) * (2 * t - 2) * (3.5949095 * (2 * t - 2) + 2.5949095) + 2) / 2
+  },
+  elastic: {
+    easeIn: t => t === 0 ? 0 : t === 1 ? 1 : -Math.pow(2, 10 * t - 10) * Math.sin((t * 10 - 10.75) * (2 * Math.PI / 3)),
+    easeOut: t => t === 0 ? 0 : t === 1 ? 1 : Math.pow(2, -10 * t) * Math.sin((t * 10 - 0.75) * (2 * Math.PI / 3)) + 1,
+    easeInOut: t => t === 0 ? 0 : t === 1 ? 1 : t < .5
+      ? -(Math.pow(2, 20 * t - 10) * Math.sin((20 * t - 11.125) * (2 * Math.PI / 4.5))) / 2
+      : (Math.pow(2, -20 * t + 10) * Math.sin((20 * t - 11.125) * (2 * Math.PI / 4.5))) / 2 + 1
+  },
+  bounce: {}
+};
+function bounceOut(t) {
+  const n1 = 7.5625, d1 = 2.75;
+  if (t < 1 / d1) return n1 * t * t;
+  if (t < 2 / d1) return n1 * (t -= 1.5 / d1) * t + .75;
+  if (t < 2.5 / d1) return n1 * (t -= 2.25 / d1) * t + .9375;
+  return n1 * (t -= 2.625 / d1) * t + .984375;
+}
+EASE.bounce.easeOut = bounceOut;
+EASE.bounce.easeIn = t => 1 - bounceOut(1 - t);
+EASE.bounce.easeInOut = t => t < .5 ? (1 - bounceOut(1 - 2 * t)) / 2 : (1 + bounceOut(2 * t - 1)) / 2;
+
+const ATTRS = {
+  _x:        { get: w => w.x,        set: (w, v) => { w.x = v; } },
+  _y:        { get: w => w.y,        set: (w, v) => { w.y = v; } },
+  _xscale:   { get: w => w.xscale,   set: (w, v) => { w.xscale = v; } },
+  _yscale:   { get: w => w.yscale,   set: (w, v) => { w.yscale = v; } },
+  _rotation: { get: w => w.rotation, set: (w, v) => { w.rotation = v; } },
+  _alpha:    { get: w => w.alpha,    set: (w, v) => { w.alpha = v; } },
+  percent:   {
+    get: w => w.meter ? w.meter.pct : 0,
+    set: (w, v) => { if (w.meter) { w.meter.pct = v; renderMeter(w); } }
+  }
+};
+
+function killTween(key) {
+  const t = tweens.get(key);
+  if (t) { cancelAnimationFrame(t.raf); clearTimeout(t.timer); tweens.delete(key); }
+}
+
+function doTransition(id, target, seconds, attr, easeClass, easeMethod) {
+  const w = widgets.get(id);
+  const spec = ATTRS[attr];
+  if (!w || !spec) return;
+  const key = id + ':' + attr;
+  killTween(key);
+  const easeFns = EASE[easeClass] || EASE.none;
+  const ease = easeFns[easeMethod] || (t => t);
+  const from = spec.get(w);
+  if (seconds <= 0) { spec.set(w, target); applyAll(w); return; }
+  const dur = seconds * 1000;
+  const t0 = performance.now();
+  const handle = { raf: 0, timer: 0 };
+  tweens.set(key, handle);
+  function step(now) {
+    const p = Math.min(1, (now - t0) / dur);
+    spec.set(w, from + (target - from) * ease(p));
+    if (attr !== 'percent') applyAll(w);
+    if (p < 1) handle.raf = requestAnimationFrame(step);
+    else tweens.delete(key);
+  }
+  handle.raf = requestAnimationFrame(step);
+}
+
+/* ---------- meters ---------- */
+function renderMeter(w) {
+  const m = w.meter;
+  const fill = w.inner.firstChild.querySelector('.fill');
+  const pct = Math.max(0, Math.min(1, m.pct));
+  const grad = 'linear-gradient(180deg, ' + m.light + ' 0%, ' + m.dark + ' 100%)';
+  fill.style.background = grad;
+  if (m.dir === 'both') {
+    fill.style.left = ((1 - pct) * 50) + '%';
+    fill.style.width = (pct * 100) + '%';
+  } else if (m.dir === 'right') {
+    fill.style.left = ((1 - pct) * 100) + '%';
+    fill.style.width = (pct * 100) + '%';
+  } else {
+    fill.style.left = '0';
+    fill.style.width = (pct * 100) + '%';
+  }
+}
+
+function cssRGB(v) {
+  return 'rgb(' + ((v >> 16) & 255) + ',' + ((v >> 8) & 255) + ',' + (v & 255) + ')';
+}
+
+/* ---------- op dispatch ---------- */
+const OPS = {
+  reset(a) {
+    lowestWidget = a.nextId;
+    tweens.forEach((t) => { cancelAnimationFrame(t.raf); clearTimeout(t.timer); });
+    tweens.clear();
+    widgets.forEach(w => w.el.remove());
+    widgets.clear();
+    stage.style.visibility = 'visible';
+  },
+
+  loadWidget(a) {
+    const w = makeWidget(a.id, 'image', a.x, a.y, a.vis);
+    w.src = a.url;
+    const img = document.createElement('img');
+    img.src = a.url;
+    w.inner.appendChild(img);
+    // DDS dimensions come from the decoder; other formats report on load.
+    if (a.w && a.h) setContentSize(w, a.w, a.h);
+    else img.addEventListener('load', () => setContentSize(w, img.naturalWidth, img.naturalHeight));
+  },
+
+  loadText(a) {
+    const w = makeWidget(a.id, 'text', a.x, a.y, a.vis);
+    const d = document.createElement('div');
+    d.className = 'txt';
+    d.style.fontFamily = mapFont(a.font);
+    d.style.fontSize = a.size + 'px';
+    d.textContent = a.text;
+    w.inner.appendChild(d);
+    measureText(w);
+  },
+
+  loadMeter(a) {
+    const w = makeWidget(a.id, 'meter', a.x, a.y, a.vis);
+    const d = document.createElement('div');
+    d.className = 'meter';
+    d.innerHTML = '<div class="fill"></div><div class="flash"></div>';
+    w.inner.appendChild(d);
+    w.meter = { pct: 1, dir: 'left', light: '#ffffff', dark: '#000000', flash: '#7f7f7f' };
+    setContentSize(w, 334, 30);
+    renderMeter(w);
+  },
+
+  setText(a) {
+    const w = widgets.get(a.id);
+    if (!w || w.type !== 'text') return;
+    w.inner.firstChild.textContent = a.text;
+    measureText(w);
+  },
+
+  appendText(a) {
+    const w = widgets.get(a.id);
+    if (!w || w.type !== 'text') return;
+    w.inner.firstChild.textContent += a.text;
+    measureText(w);
+  },
+
+  setPos(a) {
+    const w = widgets.get(a.id);
+    if (!w) return;
+    w.x = a.x; w.y = a.y;
+    applyAll(w);
+  },
+
+  setSize(a) {
+    // Flash set _height/_width on the outer clip; with 100% zoom that equals
+    // resizing the content to the requested pixel box.
+    const w = widgets.get(a.id);
+    if (!w) return;
+    setContentSize(w, a.w, a.h);
+  },
+
+  setZoom(a) {
+    const w = widgets.get(a.id);
+    if (!w) return;
+    w.xscale = a.xs; w.yscale = a.ys;
+    applyAll(w);
+    pushMetrics(w);
+  },
+
+  setVisible(a) {
+    const w = widgets.get(a.id);
+    if (!w) return;
+    w.visible = !!a.vis;
+    applyAll(w);
+  },
+
+  setRotation(a) {
+    const w = widgets.get(a.id);
+    if (!w) return;
+    w.rotation = a.rot;
+    applyAll(w);
+  },
+
+  setAlpha(a) {
+    const w = widgets.get(a.id);
+    if (!w) return;
+    killTween(a.id + ':_alpha');
+    w.alpha = a.a;
+    applyAll(w);
+  },
+
+  setColor(a) {
+    const w = widgets.get(a.id);
+    if (!w) return;
+    w.tint = cssRGB(a.rgb);
+    applyTint(w);
+  },
+
+  toBack(a) {
+    const w = widgets.get(a.id);
+    if (!w) return;
+    w.z = --zBottom;
+    applyAll(w);
+  },
+
+  toFront(a) {
+    const w = widgets.get(a.id);
+    if (!w) return;
+    w.z = ++zTop;
+    applyAll(w);
+  },
+
+  swapDepths(a) {
+    const w1 = widgets.get(a.id1), w2 = widgets.get(a.id2);
+    if (!w1 || !w2) return;
+    const z = w1.z; w1.z = w2.z; w2.z = z;
+    applyAll(w1); applyAll(w2);
+  },
+
+  destroy(a) {
+    const w = widgets.get(a.id);
+    if (!w) return;
+    ['_x', '_y', '_xscale', '_yscale', '_rotation', '_alpha', 'percent']
+      .forEach(attr => killTween(a.id + ':' + attr));
+    w.el.remove();
+    widgets.delete(a.id);
+  },
+
+  setAllVisible(a) {
+    stage.style.visibility = a.vis ? 'visible' : 'hidden';
+  },
+
+  drawLine(a) {
+    let cx = a.x, cy = a.y;
+    for (const id of a.list) {
+      if (shouldDraw(id, a.skipInv, a.skipA0)) {
+        const w = widgets.get(id);
+        w.x = cx; w.y = cy;
+        applyAll(w);
+        cx += a.dx; cy += a.dy;
+      }
+    }
+  },
+
+  drawCircle(a) {
+    placeOnArc(a, a.list, a.startAngle);
+  },
+
+  drawOrbit(a) {
+    if (a.list.length === 0) return;
+    if (shouldDraw(a.list[0], a.skipInv, a.skipA0)) {
+      const w = widgets.get(a.list[0]);
+      w.x = a.x; w.y = a.y;
+      applyAll(w);
+    }
+    placeOnArc(a, a.list.slice(1), a.startAngle);
+  },
+
+  doTransition(a) {
+    if (a.delay > 0) {
+      const key = a.id + ':' + a.attr;
+      killTween(key);
+      const handle = { raf: 0, timer: 0 };
+      handle.timer = setTimeout(() => {
+        tweens.delete(key);
+        doTransition(a.id, a.target, a.seconds, a.attr, a.easeClass, a.easeMethod);
+      }, a.delay * 1000);
+      tweens.set(key, handle);
+    } else {
+      doTransition(a.id, a.target, a.seconds, a.attr, a.easeClass, a.easeMethod);
+    }
+  },
+
+  meterPercent(a) {
+    const w = widgets.get(a.id);
+    if (!w || !w.meter) return;
+    // Flash called setPercent(pct, animated=true); approximate with the
+    // meter's own short tween.
+    doTransition(a.id, a.pct, 0.25, 'percent', 'regular', 'easeOut');
+  },
+
+  meterDir(a) {
+    const w = widgets.get(a.id);
+    if (!w || !w.meter) return;
+    w.meter.dir = a.dir;
+    renderMeter(w);
+  },
+
+  meterColors(a) {
+    const w = widgets.get(a.id);
+    if (!w || !w.meter) return;
+    w.meter.light = cssRGB(a.light);
+    w.meter.dark = cssRGB(a.dark);
+    w.meter.flash = cssRGB(a.flash);
+    renderMeter(w);
+    w.inner.firstChild.querySelector('.flash').style.background = w.meter.flash;
+  },
+
+  meterFlash(a) {
+    const w = widgets.get(a.id);
+    if (!w || !w.meter) return;
+    const f = w.inner.firstChild.querySelector('.flash');
+    f.style.animation = 'none';
+    void f.offsetWidth;                  // restart the keyframe animation
+    f.style.animation = 'meterflash 0.6s ease-out';
+  }
+};
+
+function placeOnArc(a, list, startAngle) {
+  let degreeChange = a.degreeChange;
+  if (a.autoSpace) {
+    let count = 0;
+    for (const id of list) if (shouldDraw(id, a.skipInv, a.skipA0)) count++;
+    if (count > 1) {
+      if (degreeChange === 360) degreeChange = degreeChange / count;
+      else degreeChange = degreeChange / (count - 1);
+    }
+  }
+  let angle = startAngle;
+  for (const id of list) {
+    if (shouldDraw(id, a.skipInv, a.skipA0)) {
+      const w = widgets.get(id);
+      w.x = a.x + a.radius * Math.cos(angle * Math.PI / 180);
+      w.y = a.y + a.radius * Math.sin(angle * Math.PI / 180);
+      applyAll(w);
+      angle += degreeChange;
+    }
+  }
+}
+
+/* Single entry point the DLL invokes: InteropCall("iwCall", json). */
+window.iwCall = function (json) {
+  try {
+    const a = JSON.parse(json);
+    const op = OPS[a.op];
+    if (op) op(a);
+  } catch (e) {
+    console.error('iwCall failed: ' + e + ' payload: ' + String(json).slice(0, 200));
+  }
+};
+</script>
+</body>
+</html>
