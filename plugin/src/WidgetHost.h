@@ -24,8 +24,12 @@ public:
 
 	struct ImageData
 	{
-		std::string url;  // data: URL (PNG for decoded DDS, passthrough otherwise)
-		int w = 0;        // pixel size when known at decode time (DDS)
+		// DDS is decoded to raw RGBA and shipped as base64 pixels (px) — the
+		// view paints them on a canvas, bypassing Ultralight's image loader
+		// and CSS-mask support entirely. PNG/JPG pass through as a data URL.
+		std::string px;   // base64 of w*h*4 RGBA bytes (DDS path)
+		std::string url;  // data: URL (PNG/JPG passthrough path)
+		int w = 0;
 		int h = 0;
 	};
 

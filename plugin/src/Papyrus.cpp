@@ -21,16 +21,19 @@ namespace
 		const auto& img = host.LoadImageFile(file);
 		const int id = host.NextId();
 		host.SetMetrics(id, img.w, img.h);
-		host.Send(Json::Obj()
-				.Str("op", "loadWidget")
-				.Int("id", id)
-				.Str("url", img.url)
-				.Int("w", img.w)
-				.Int("h", img.h)
-				.Int("x", x)
-				.Int("y", y)
-				.Boolean("vis", visible)
-				.Build());
+		Json::Obj o;
+		o.Str("op", "loadWidget").Int("id", id);
+		if (!img.px.empty()) {
+			o.Str("px", img.px);
+		} else {
+			o.Str("url", img.url);
+		}
+		o.Int("w", img.w)
+			.Int("h", img.h)
+			.Int("x", x)
+			.Int("y", y)
+			.Boolean("vis", visible);
+		host.Send(o.Build());
 		return id;
 	}
 

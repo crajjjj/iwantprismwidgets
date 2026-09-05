@@ -94,44 +94,10 @@ namespace
 		(void)initialized;
 	}
 
-	bool EncodePNG(IWICImagingFactory* factory, IWICBitmapSource* src,
-		std::vector<std::uint8_t>& png)
-	{
-		ComPtr<IStream> out;
-		if (FAILED(CreateStreamOnHGlobal(nullptr, TRUE, &out))) {
-			return false;
-		}
-
-		ComPtr<IWICBitmapEncoder> encoder;
-		ComPtr<IWICBitmapFrameEncode> frame;
-		if (FAILED(factory->CreateEncoder(GUID_ContainerFormatPng, nullptr, &encoder)) ||
-			FAILED(encoder->Initialize(out.Get(), WICBitmapEncoderNoCache)) ||
-			FAILED(encoder->CreateNewFrame(&frame, nullptr)) ||
-			FAILED(frame->Initialize(nullptr)) ||
-			FAILED(frame->WriteSource(src, nullptr)) ||
-			FAILED(frame->Commit()) ||
-			FAILED(encoder->Commit())) {
-			return false;
-		}
-
-		HGLOBAL hg = nullptr;
-		if (FAILED(GetHGlobalFromStream(out.Get(), &hg))) {
-			return false;
-		}
-		const auto size = GlobalSize(hg);
-		const auto* p = static_cast<const std::uint8_t*>(GlobalLock(hg));
-		if (!p) {
-			return false;
-		}
-		png.assign(p, p + size);
-		GlobalUnlock(hg);
-		return true;
-	}
-
-	// Decode DDS via Windows' built-in WIC DDS codec (covers DXT1/3/5 and
-	// DX10-header formats), with a manual fallback for legacy uncompressed
-	// 32bpp DDS files the codec rejects. Re-encodes to PNG for the view.
-	bool DecodeDDSToPNG(const std::vector<std::uint8_t>& dds, std::vector<std::uint8_t>& png,
+	// Decode DDS to raw RGBA via Windows' built-in WIC DDS codec (covers
+	// DXT1/3/5 and DX10-header formats), with a manual fallback for legacy
+	// uncompressed 32bpp DDS files the codec rejects.
+	bool DecodeDDSToRGBA(const std::vector<std::uint8_t>& dds, std::vector<std::uint8_t>& rgba,
 		int& w, int& h)
 	{
 		EnsureCom();
@@ -151,18 +117,22 @@ namespace
 			UINT uw = 0, uh = 0;
 			if (SUCCEEDED(decoder->GetFrame(0, &frame)) &&
 				SUCCEEDED(frame->GetSize(&uw, &uh)) &&
-				SUCCEEDED(WICConvertBitmapSource(GUID_WICPixelFormat32bppBGRA, frame.Get(),
-					&converted)) &&
-				EncodePNG(factory.Get(), converted.Get(), png)) {
-				w = static_cast<int>(uw);
-				h = static_cast<int>(uh);
-				return true;
+				SUCCEEDED(WICConvertBitmapSource(GUID_WICPixelFormat32bppRGBA, frame.Get(),
+					&converted))) {
+				rgba.resize(static_cast<std::size_t>(uw) * uh * 4);
+				if (SUCCEEDED(converted->CopyPixels(nullptr, uw * 4,
+						static_cast<UINT>(rgba.size()), rgba.data()))) {
+					w = static_cast<int>(uw);
+					h = static_cast<int>(uh);
+					return true;
+				}
 			}
 		}
 
 		// Legacy uncompressed 32bpp DDS: 4-byte magic + 124-byte header, then
 		// raw pixel data. Header fields: height @12, width @16, pixel format
-		// flags @80 (0x40 = uncompressed RGB), bit count @88.
+		// flags @80 (0x40 = uncompressed RGB), bit count @88, R mask @92,
+		// alpha mask @104.
 		if (dds.size() > 128 && std::memcmp(dds.data(), "DDS ", 4) == 0) {
 			const auto u32 = [&](std::size_t off) {
 				std::uint32_t v;
@@ -171,17 +141,32 @@ namespace
 			};
 			const std::uint32_t height = u32(12), width = u32(16);
 			const std::uint32_t pfFlags = u32(80), bitCount = u32(88);
-			if ((pfFlags & 0x40) != 0 && bitCount == 32 &&
-				dds.size() >= 128 + static_cast<std::size_t>(width) * height * 4) {
-				ComPtr<IWICBitmap> bmp;
-				if (SUCCEEDED(factory->CreateBitmapFromMemory(width, height,
-						GUID_WICPixelFormat32bppBGRA, width * 4, width * height * 4,
-						const_cast<BYTE*>(dds.data() + 128), &bmp)) &&
-					EncodePNG(factory.Get(), bmp.Get(), png)) {
-					w = static_cast<int>(width);
-					h = static_cast<int>(height);
-					return true;
+			const std::uint32_t rMask = u32(92), aMask = u32(104);
+			const std::size_t need = 128 + static_cast<std::size_t>(width) * height * 4;
+			const bool bgra = rMask == 0x00FF0000u;
+			const bool already = rMask == 0x000000FFu;
+			if ((pfFlags & 0x40) != 0 && bitCount == 32 && (bgra || already) &&
+				dds.size() >= need) {
+				const std::uint8_t* src = dds.data() + 128;
+				const std::size_t count = static_cast<std::size_t>(width) * height;
+				rgba.resize(count * 4);
+				for (std::size_t i = 0; i < count; ++i) {
+					const std::uint8_t* p = src + i * 4;
+					std::uint8_t* q = rgba.data() + i * 4;
+					if (bgra) {
+						q[0] = p[2];
+						q[1] = p[1];
+						q[2] = p[0];
+					} else {
+						q[0] = p[0];
+						q[1] = p[1];
+						q[2] = p[2];
+					}
+					q[3] = aMask ? p[3] : 255;
 				}
+				w = static_cast<int>(width);
+				h = static_cast<int>(height);
+				return true;
 			}
 		}
 
@@ -287,9 +272,9 @@ const WidgetHost::ImageData& WidgetHost::LoadImageFile(const std::string& file)
 	if (!ReadGameFile(relPath, bytes)) {
 		logger::error("loadWidget: cannot read '{}' (loose or BSA)", relPath);
 	} else if (ext == ".dds") {
-		std::vector<std::uint8_t> png;
-		if (DecodeDDSToPNG(bytes, png, data.w, data.h)) {
-			data.url = "data:image/png;base64," + Base64(png.data(), png.size());
+		std::vector<std::uint8_t> rgba;
+		if (DecodeDDSToRGBA(bytes, rgba, data.w, data.h)) {
+			data.px = Base64(rgba.data(), rgba.size());
 		} else {
 			logger::error("loadWidget: DDS decode failed for '{}'", relPath);
 		}
@@ -301,12 +286,10 @@ const WidgetHost::ImageData& WidgetHost::LoadImageFile(const std::string& file)
 		logger::error("loadWidget: unsupported format '{}' for '{}'", ext, relPath);
 	}
 
-	if (data.url.empty()) {
-		// 1x1 transparent PNG so a bad path degrades to an invisible widget
+	if (data.px.empty() && data.url.empty()) {
+		// 1x1 transparent pixel so a bad path degrades to an invisible widget
 		// instead of a broken-image glyph.
-		data.url =
-			"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ"
-			"AAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+		data.px = "AAAAAA==";
 		data.w = 1;
 		data.h = 1;
 	}

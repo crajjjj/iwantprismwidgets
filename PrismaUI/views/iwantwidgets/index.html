@@ -19,7 +19,7 @@
   }
   .w { position: absolute; }
   .wc { position: absolute; left: 0; top: 0; transform: translate(-50%, -50%); }
-  .wc img, .wc .tint { display: block; }
+  .wc img, .wc canvas { display: block; }
   .wc .txt {
     color: #FFFFFF; white-space: pre; text-align: center;
     text-shadow: 1px 1px 2px rgba(0,0,0,0.75);
@@ -99,10 +99,12 @@ function makeWidget(id, type, x, y, visible) {
   const w = {
     id, type, el, inner,
     x, y, xscale: 100, yscale: 100, rotation: 0, alpha: 100,
-    visible: !!visible, tint: null,
+    visible: !!visible, tint: null, tintRGB: null,
     cw: 0, ch: 0,                    // content size in px (pre-scale)
+    pixels: null, pw: 0, ph: 0,      // raw RGBA + natural size (DDS path)
+    imgSrcEl: null,                  // off-DOM Image (PNG/JPG path)
     z: ++zTop,
-    meter: null, src: null, fontCss: '', fontSize: 0
+    meter: null
   };
   widgets.set(id, w);
   applyAll(w);
@@ -143,29 +145,44 @@ function setContentSize(w, cw, ch) {
   pushMetrics(w);
 }
 
-/* Tinting reproduces Flash's ColorTransform.rgb: the whole widget renders as
-   a flat color, silhouetted by its own alpha channel. */
+/* Image widgets render on a canvas. Tinting reproduces Flash's
+   ColorTransform.rgb — the widget becomes a flat color silhouetted by its own
+   alpha channel — done per-pixel (DDS path) or with a source-in composite
+   (PNG/JPG path). Ultralight lacks CSS mask support, so no masks here. */
+function paintImage(w) {
+  const cv = w.inner.firstChild;
+  if (!cv || cv.tagName !== 'CANVAS') return;
+  const ctx = cv.getContext('2d');
+  if (w.pixels) {
+    const im = ctx.createImageData(w.pw, w.ph);
+    const d = im.data, s = w.pixels, t = w.tintRGB;
+    if (t) {
+      for (let i = 0; i < s.length; i += 4) {
+        d[i] = t[0]; d[i + 1] = t[1]; d[i + 2] = t[2]; d[i + 3] = s[i + 3];
+      }
+    } else {
+      d.set(s);
+    }
+    ctx.putImageData(im, 0, 0);
+  } else if (w.imgSrcEl && w.imgSrcEl.complete && w.imgSrcEl.naturalWidth) {
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.clearRect(0, 0, cv.width, cv.height);
+    ctx.drawImage(w.imgSrcEl, 0, 0);
+    if (w.tintRGB) {
+      ctx.globalCompositeOperation = 'source-in';
+      ctx.fillStyle = w.tint;
+      ctx.fillRect(0, 0, cv.width, cv.height);
+      ctx.globalCompositeOperation = 'source-over';
+    }
+  }
+}
+
 function applyTint(w) {
-  if (w.type !== 'image') {
-    if (w.type === 'text' && w.tint) w.inner.firstChild.style.color = w.tint;
+  if (w.type === 'text') {
+    if (w.tint) w.inner.firstChild.style.color = w.tint;
     return;
   }
-  const c = w.inner.firstChild;
-  if (!c) return;
-  if (w.tint) {
-    if (c.tagName === 'IMG') {
-      const d = document.createElement('div');
-      d.className = 'tint';
-      d.style.width = w.cw + 'px';
-      d.style.height = w.ch + 'px';
-      d.style.webkitMaskImage = 'url(' + w.src + ')';
-      d.style.maskImage = 'url(' + w.src + ')';
-      d.style.webkitMaskSize = '100% 100%';
-      d.style.maskSize = '100% 100%';
-      w.inner.replaceChild(d, c);
-    }
-    w.inner.firstChild.style.backgroundColor = w.tint;
-  }
+  if (w.type === 'image') paintImage(w);
 }
 
 function shouldDraw(id, skipInvisible, skipAlpha0) {
@@ -297,13 +314,33 @@ const OPS = {
 
   loadWidget(a) {
     const w = makeWidget(a.id, 'image', a.x, a.y, a.vis);
-    w.src = a.url;
-    const img = document.createElement('img');
-    img.src = a.url;
-    w.inner.appendChild(img);
-    // DDS dimensions come from the decoder; other formats report on load.
-    if (a.w && a.h) setContentSize(w, a.w, a.h);
-    else img.addEventListener('load', () => setContentSize(w, img.naturalWidth, img.naturalHeight));
+    const cv = document.createElement('canvas');
+    cv.width = Math.max(1, a.w);
+    cv.height = Math.max(1, a.h);
+    w.inner.appendChild(cv);
+    if (a.px) {
+      // Raw RGBA from the DLL's DDS decoder.
+      const bin = atob(a.px);
+      const px = new Uint8ClampedArray(bin.length);
+      for (let i = 0; i < bin.length; i++) px[i] = bin.charCodeAt(i);
+      w.pixels = px;
+      w.pw = a.w;
+      w.ph = a.h;
+      paintImage(w);
+      setContentSize(w, a.w, a.h);
+    } else {
+      const img = new Image();
+      w.imgSrcEl = img;
+      img.addEventListener('load', () => {
+        cv.width = img.naturalWidth;
+        cv.height = img.naturalHeight;
+        w.pw = cv.width;
+        w.ph = cv.height;
+        paintImage(w);
+        setContentSize(w, cv.width, cv.height);
+      });
+      img.src = a.url;
+    }
   },
 
   loadText(a) {
@@ -391,6 +428,7 @@ const OPS = {
     const w = widgets.get(a.id);
     if (!w) return;
     w.tint = cssRGB(a.rgb);
+    w.tintRGB = [(a.rgb >> 16) & 255, (a.rgb >> 8) & 255, a.rgb & 255];
     applyTint(w);
   },
 
