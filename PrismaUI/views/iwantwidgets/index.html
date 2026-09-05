@@ -201,7 +201,9 @@ function applyTint(w) {
 }
 
 function shouldDraw(id, skipInvisible, skipAlpha0) {
-  if (id < lowestWidget) return false;
+  // No lowestWidget gate: reset() clears the widget map, so any widget still
+  // present was created after the last reset — a stale-id skip could only
+  // wrongly strand a live icon (never positioning it into its bar).
   const w = widgets.get(id);
   if (!w) return false;                 // matches Flash reading an undefined clip
   if (skipInvisible && !w.visible) return false;
@@ -264,11 +266,18 @@ const ATTRS = {
   }
 };
 
+function nowMs() { return (typeof performance !== 'undefined' ? performance.now() : Date.now()); }
+
 function killTween(key) {
   const t = tweens.get(key);
-  if (t) { cancelAnimationFrame(t.raf); clearTimeout(t.timer); tweens.delete(key); }
+  if (t) { clearInterval(t.interval); clearTimeout(t.guard); clearTimeout(t.delay); tweens.delete(key); }
 }
 
+// Timer-driven, NOT requestAnimationFrame: Ultralight throttles/pauses rAF for
+// an unfocused overlay, which would strand a fade partway (an icon left near
+// the setTransparency(1) value looks gone). setInterval keeps ticking, and a
+// setTimeout guarantees the final value even if the interval is coarse/paused —
+// so a widget always REACHES its target alpha and never sticks invisible.
 function doTransition(id, target, seconds, attr, easeClass, easeMethod) {
   const w = widgets.get(id);
   const spec = ATTRS[attr];
@@ -278,19 +287,25 @@ function doTransition(id, target, seconds, attr, easeClass, easeMethod) {
   const easeFns = EASE[easeClass] || EASE.none;
   const ease = easeFns[easeMethod] || (t => t);
   const from = spec.get(w);
-  if (seconds <= 0) { spec.set(w, target); applyAll(w); return; }
+  const apply = () => { if (attr !== 'percent') applyAll(w); };
+  if (seconds <= 0) { spec.set(w, target); apply(); return; }
   const dur = seconds * 1000;
-  const t0 = performance.now();
-  const handle = { raf: 0, timer: 0 };
+  const t0 = nowMs();
+  const handle = { interval: 0, guard: 0, delay: 0 };
   tweens.set(key, handle);
-  function step(now) {
-    const p = Math.min(1, (now - t0) / dur);
-    spec.set(w, from + (target - from) * ease(p));
-    if (attr !== 'percent') applyAll(w);
-    if (p < 1) handle.raf = requestAnimationFrame(step);
-    else tweens.delete(key);
-  }
-  handle.raf = requestAnimationFrame(step);
+  const finish = () => {
+    if (tweens.get(key) !== handle) return;
+    spec.set(w, target); apply();
+    clearInterval(handle.interval); clearTimeout(handle.guard);
+    tweens.delete(key);
+  };
+  handle.interval = setInterval(() => {
+    if (tweens.get(key) !== handle) { clearInterval(handle.interval); return; }
+    const p = Math.min(1, (nowMs() - t0) / dur);
+    spec.set(w, from + (target - from) * ease(p)); apply();
+    if (p >= 1) finish();
+  }, 33);
+  handle.guard = setTimeout(finish, dur + 250);
 }
 
 /* ---------- meters ---------- */
@@ -320,7 +335,7 @@ function cssRGB(v) {
 const OPS = {
   reset(a) {
     lowestWidget = a.nextId;
-    tweens.forEach((t) => { cancelAnimationFrame(t.raf); clearTimeout(t.timer); });
+    tweens.forEach((t) => { clearInterval(t.interval); clearTimeout(t.guard); clearTimeout(t.delay); });
     tweens.clear();
     widgets.forEach(w => { clearTimeout(w.animTimer); w.el.remove(); });
     widgets.clear();
@@ -527,8 +542,8 @@ const OPS = {
     if (a.delay > 0) {
       const key = a.id + ':' + a.attr;
       killTween(key);
-      const handle = { raf: 0, timer: 0 };
-      handle.timer = setTimeout(() => {
+      const handle = { interval: 0, guard: 0, delay: 0 };
+      handle.delay = setTimeout(() => {
         tweens.delete(key);
         doTransition(a.id, a.target, a.seconds, a.attr, a.easeClass, a.easeMethod);
       }, a.delay * 1000);
