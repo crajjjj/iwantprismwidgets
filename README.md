@@ -14,10 +14,11 @@ fixes plus small accessors its NPC tracking needs. That fork lives in the SL
 Widgets repo, not here; it is orthogonal to the rendering layer this mod
 replaces and works with the Flash original too.)
 
-> **Status: builds clean, not yet tested in game.** The DLL compiles
-> (VS2022/xmake), all three scripts compile against real SKSE sources, and the
-> ESP + SEQ are authored (via houseCARL — no CK session needed). What remains
-> is the in-game smoke test below.
+> **Status: in-game and iterating.** Builds clean (DLL via VS2022/xmake, all
+> scripts against real SKSE sources), plugin + SEQ authored via houseCARL, and
+> loading/rendering has been exercised in a live load order. Rendering,
+> menu/scene hiding, image formats (incl. animated), and the init handshake
+> have each been fixed against in-game behavior — see the git log.
 
 ## Why
 
@@ -48,8 +49,10 @@ PrismaUI/views/iwantwidgets/index.html            (widget registry, transforms,
 ```
 
 - Widget model is preserved from `iWantWidgets.as`: `(x, y)` is the widget's
-  **center**; rotation/scale/alpha apply to the whole widget; `setRGB`
-  reproduces Flash's `ColorTransform.rgb` flat-tint via CSS `mask-image`.
+  **center**; rotation/scale/alpha apply to the whole widget. Images render on a
+  `<canvas>` from raw RGBA (WIC-decoded in the DLL), and `setRGB` reproduces
+  Flash's `ColorTransform.rgb` flat-tint per-pixel — Ultralight has no CSS
+  `mask-image`, which is why the canvas path exists.
 - `drawShapeLine/Circle/Orbit`, easing classes (`regular/strong/back/bounce/
   elastic` × `in/out/inout`), and TweenMax-style tween overwrite are ported 1:1.
 - The `setSkyrim*` family pokes the **vanilla** Scaleform HUD via `UI.*` and
@@ -92,24 +95,29 @@ Compile the three `.psc` with the standard SkyrimSE compiler. Required import
 sources: vanilla scripts + SKSE scripts (`UI.psc`, `Utility.psc`). **SkyUI
 sources are NOT needed** (that's the point).
 
-### The plugin (.esp)
+### The plugin — `iWant Widgets.esl`
 
-`iWant Widgets Prisma.esp` ships in the repo root (authored with houseCARL, no
-CK needed): quest `iWantPrismaWidgetQuest` (Start Game Enabled) carrying the
-`iwant_widgets` script, plus a PlayerRef-forced `PlayerAlias` carrying
-`iwant_widgets_prisma_alias`. `SEQ/iWant Widgets Prisma.seq` accompanies it —
-without the SEQ a start-game-enabled quest in an .esp silently never starts.
+The plugin ships under the **same filename as the original** (`iWant Widgets.esl`,
+light-flagged) so a mod manager serves it in place of the original by load
+priority — the same shadowing our `.pex` files already do for the scripts. It
+is **not** a patch and takes **no master**: it is a self-contained light plugin
+authored with houseCARL (no CK), carrying quest `iWantPrismaWidgetQuest` (Start
+Game Enabled) with the `iwant_widgets` script plus a PlayerRef-forced
+`PlayerAlias` running `iwant_widgets_prisma_alias`. `SEQ/iWant Widgets.seq`
+accompanies it — without the SEQ a start-game-enabled quest never starts.
 
-Any plugin filename works — verified: `iWant Status Bars.esp` has **no
-masters** and no reference to the original `iWant Widgets.esl`.
+Because the filename matches, install this mod at **higher priority than the
+original iWant Widgets** (or disable the original outright — this plugin is
+self-contained). Consumers still bind by the `iWant_Widgets` script type via the
+`iWantWidgetsReset` event, so nothing depends on the plugin's FormIDs.
 
 ## Install layout (users)
 
 ```
 Data/
-├── iWant Widgets Prisma.esp
-├── SEQ/iWant Widgets Prisma.seq
-├── Scripts/iwant_widgets.pex               ← overrides the original's script
+├── iWant Widgets.esl                        ← same name as the original (replaces it)
+├── SEQ/iWant Widgets.seq
+├── Scripts/iwant_widgets.pex                ← overrides the original's script
 ├── Scripts/iWantWidgetsNative.pex
 ├── Scripts/iwant_widgets_prisma_alias.pex
 ├── SKSE/Plugins/iWantWidgetsPrisma.dll
@@ -117,10 +125,10 @@ Data/
 └── Interface/exported/widgets/iwant/widgets/library/*.dds   ← bundled (MIT)
 ```
 
-- **Disable** the original iWant Widgets mod (its ESL, `iWantWidgets.swf`, and
-  `iwant_widgets.pex`); the library DDS icons are bundled here, so nothing
-  from it is needed. If you keep it enabled instead, this mod must win the
-  `iwant_widgets.pex` conflict.
+- Install **at higher priority than the original iWant Widgets** so this mod's
+  `iWant Widgets.esl` + scripts win the file conflict — or disable the original
+  entirely (this mod is self-contained: it bundles the plugin, scripts, DLL,
+  view, and the MIT library icons).
 - **Keep** iWant Status Bars installed and untouched.
 - Requires: SKSE, Address Library, [PrismaUI](https://www.nexusmods.com/skyrimspecialedition/mods/148718)
   (+ its Media Keys Fix requirement).
