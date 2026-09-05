@@ -9,12 +9,13 @@ runtime by catching the `iWantWidgetsReset` mod event and casting its sender to
 the `iWant_Widgets` script type — no plugin master, no FormID binding — so a
 same-named script backed by natives slots straight in.
 
-This edition also bundles a **patched fork of the Status Bars scripts**
-(2.09 base, MIT) — bug fixes and two small API additions that used to ship
-inside SL Widgets; see [Bundled Status Bars fork](#bundled-status-bars-fork).
+(SL Widgets bundles its own patched fork of the Status Bars *scripts* — bug
+fixes plus small accessors its NPC tracking needs. That fork lives in the SL
+Widgets repo, not here; it is orthogonal to the rendering layer this mod
+replaces and works with the Flash original too.)
 
 > **Status: builds clean, not yet tested in game.** The DLL compiles
-> (VS2022/xmake), all five scripts compile against real SKSE sources, and the
+> (VS2022/xmake), all three scripts compile against real SKSE sources, and the
 > ESP + SEQ are authored (via houseCARL — no CK session needed). What remains
 > is the in-game smoke test below.
 
@@ -64,37 +65,9 @@ PrismaUI/views/iwantwidgets/index.html            (widget registry, transforms,
 Source/Scripts/iwant_widgets.psc            drop-in fork (same public API as 1.33)
 Source/Scripts/iWantWidgetsNative.psc       native declarations
 Source/Scripts/iwant_widgets_prisma_alias.psc  reset trigger (player alias)
-Source/Scripts/iwant_status_bars.psc        patched Status Bars fork (2.09 base)
-Source/Scripts/iwant_status_bars_mcm.psc    patched Status Bars MCM (2.09 base)
 PrismaUI/views/iwantwidgets/index.html      the renderer
 plugin/                                     SKSE plugin (xmake + CommonLibSSE-NG)
 ```
-
-## Bundled Status Bars fork
-
-`iwant_status_bars.psc` / `iwant_status_bars_mcm.psc` are stock 2.09 plus the
-patch set that previously shipped inside SL Widgets (moved here so all iWant
-fixes live in one package):
-
-- **Initialization**: `barsReady` waits are bounded (stock spins forever if
-  init never completes; `loadIcon` did not wait at all), and `barsReady` is
-  set before `_claimBlankIcon()` — fixes a first-load deadlock and an icon
-  registration race.
-- **Correctness**: `_findBarOfIcon` compares the icon id (stock returned the
-  first bar with *any* icon); `_nextFreeBarPosition` is no longer called with
-  bar `-1`; activation-key handlers redraw only the bar whose key matched.
-- **Rendering**: alpha snap/redraw/transition ordering in `_setIconStatusByID`
-  removes a visible pulse on every status tick and fixes `hideOnAlpha0`
-  positioning; `_loadIconWidgets` starts widgets at their state-0 alpha.
-- **MCM**: bar X/Y position sliders apply immediately (stock waited for the
-  next icon-state change); FISS settings load skips released
-  ("No Icon - No Icon") slots.
-- **API additions** for dependent mods: `_getBarVisible(bar)` and
-  `_getBarLastChangeTime(bar)` (with per-bar change timestamps), used e.g. by
-  SL Widgets to hide its NPC name labels while an autohide bar is faded out;
-  `_getPatchVersion()` (returns 1) so dependents can probe for the fork —
-  SL Widgets 2.2.4+ probes it once and disables its NPC-tracking layer when
-  the fork is absent (player tracking works on stock Status Bars).
 
 ## Building
 
@@ -115,10 +88,9 @@ Output: `iWantWidgetsPrisma.dll`. DirectXTex is pulled via xmake-repo
 
 ### Papyrus scripts
 
-Compile the five `.psc` with the standard SkyrimSE compiler. Required import
+Compile the three `.psc` with the standard SkyrimSE compiler. Required import
 sources: vanilla scripts + SKSE scripts (`UI.psc`, `Utility.psc`). **SkyUI
-sources are NOT needed** for the widget layer (that's the point); the bundled
-Status Bars MCM fork additionally needs the SkyUI SDK and FISS sources.
+sources are NOT needed** (that's the point).
 
 ### The plugin (.esp)
 
@@ -140,8 +112,6 @@ Data/
 ├── Scripts/iwant_widgets.pex               ← overrides the original's script
 ├── Scripts/iWantWidgetsNative.pex
 ├── Scripts/iwant_widgets_prisma_alias.pex
-├── Scripts/iwant_status_bars.pex           ← overrides iWant Status Bars (patched fork)
-├── Scripts/iwant_status_bars_mcm.pex       ← overrides its MCM (patched fork)
 ├── SKSE/Plugins/iWantWidgetsPrisma.dll
 ├── PrismaUI/views/iwantwidgets/index.html
 └── Interface/exported/widgets/iwant/widgets/library/*.dds   ← bundled (MIT)
@@ -151,9 +121,7 @@ Data/
   `iwant_widgets.pex`); the library DDS icons are bundled here, so nothing
   from it is needed. If you keep it enabled instead, this mod must win the
   `iwant_widgets.pex` conflict.
-- **Keep** iWant Status Bars installed (its ESP, BSA, and icons are still the
-  real mod); this mod's patched `iwant_status_bars*.pex` must win the script
-  conflict against it.
+- **Keep** iWant Status Bars installed and untouched.
 - Requires: SKSE, Address Library, [PrismaUI](https://www.nexusmods.com/skyrimspecialedition/mods/148718)
   (+ its Media Keys Fix requirement).
 - Mid-playthrough swap works: the widgets script holds no meaningful save
