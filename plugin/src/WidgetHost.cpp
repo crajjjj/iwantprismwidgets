@@ -461,6 +461,11 @@ void WidgetHost::OnDataLoaded()
 		// A freshly (re)created view needs one resync so consumers repopulate
 		// it; if Ultralight ever re-readies the DOM, this re-arms that.
 		host.viewFresh_.store(true);
+		{
+			// Fresh JS heap = empty view-side image cache; ship pixels anew.
+			std::scoped_lock lock(host.mtx_);
+			host.pushedImages_.clear();
+		}
 		// Flip domReady_ only once the queue is observed empty under the
 		// lock. A Send racing this drain still lands in pending_ (ready is
 		// false) and is picked up by the next pass - nothing can dispatch
@@ -477,7 +482,7 @@ void WidgetHost::OnDataLoaded()
 				backlog.swap(host.pending_);
 			}
 			for (auto& json : backlog) {
-				host.Dispatch(json);
+				host.EnqueueOp(std::move(json));
 			}
 		}
 	});
@@ -589,22 +594,60 @@ void WidgetHost::Send(std::string json)
 			return;
 		}
 	}
-	Dispatch(json);
+	EnqueueOp(std::move(json));
 }
 
-void WidgetHost::Dispatch(const std::string& json)
+void WidgetHost::EnqueueOp(std::string json)
 {
-	if (!api_ || !view_) {
-		return;
+	bool schedule = false;
+	{
+		std::scoped_lock lock(mtx_);
+		batch_.push_back(std::move(json));
+		if (!flushQueued_) {
+			flushQueued_ = true;
+			schedule = true;
+		}
 	}
 	// Serialize all view access onto the main thread; natives run on Papyrus
-	// VM threads and Ultralight is not documented thread-safe.
-	SKSE::GetTaskInterface()->AddTask([json]() {
-		auto& host = WidgetHost::Get();
-		if (host.api_ && host.view_ && host.api_->IsValid(host.view_)) {
-			host.api_->InteropCall(host.view_, "iwCall", json.c_str());
+	// VM threads and Ultralight is not documented thread-safe. One task per
+	// burst: everything queued before the task runs goes out as one batch.
+	if (schedule) {
+		SKSE::GetTaskInterface()->AddTask([]() { WidgetHost::Get().FlushBatch(); });
+	}
+}
+
+void WidgetHost::FlushBatch()
+{
+	std::vector<std::string> ops;
+	{
+		std::scoped_lock lock(mtx_);
+		ops.swap(batch_);
+		flushQueued_ = false;
+	}
+	if (ops.empty() || !api_ || !view_ || !api_->IsValid(view_)) {
+		return;
+	}
+	std::size_t total = 2;
+	for (const auto& op : ops) {
+		total += op.size() + 1;
+	}
+	std::string arr;
+	arr.reserve(total);
+	arr += '[';
+	for (std::size_t i = 0; i < ops.size(); ++i) {
+		if (i) {
+			arr += ',';
 		}
-	});
+		arr += ops[i];
+	}
+	arr += ']';
+	api_->InteropCall(view_, "iwCall", arr.c_str());
+}
+
+bool WidgetHost::ShouldSendPixels(const std::string& key)
+{
+	std::scoped_lock lock(mtx_);
+	return pushedImages_.insert(key).second;
 }
 
 const WidgetHost::ImageData& WidgetHost::LoadImageFile(const std::string& file)

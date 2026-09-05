@@ -24,19 +24,32 @@ namespace
 		logger::info("DIAG loadWidget: id={} file={}", id, file);
 		Json::Obj o;
 		o.Str("op", "loadWidget").Int("id", id);
-		if (!img.frames.empty()) {
-			std::string arr = "[";
-			for (std::size_t i = 0; i < img.frames.size(); ++i) {
-				if (i) {
-					arr += ',';
-				}
-				arr += std::format(R"({{"ms":{},"px":"{}"}})", img.frames[i].ms,
-					img.frames[i].px);
+		if (!img.frames.empty() || !img.px.empty()) {
+			// Consumers reload the same icon files over and over (every MCM
+			// toggle rebuilds whole bars). The base64 pixels dominate the op
+			// payload, so ship them only the first time; after that the op
+			// names the file and the view reuses its cached decode.
+			std::string key = file;
+			for (auto& c : key) {
+				c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
 			}
-			arr += ']';
-			o.Raw("frames", arr);
-		} else if (!img.px.empty()) {
-			o.Str("px", img.px);
+			o.Str("file", key);
+			if (host.ShouldSendPixels(key)) {
+				if (!img.frames.empty()) {
+					std::string arr = "[";
+					for (std::size_t i = 0; i < img.frames.size(); ++i) {
+						if (i) {
+							arr += ',';
+						}
+						arr += std::format(R"({{"ms":{},"px":"{}"}})", img.frames[i].ms,
+							img.frames[i].px);
+					}
+					arr += ']';
+					o.Raw("frames", arr);
+				} else {
+					o.Str("px", img.px);
+				}
+			}
 		} else {
 			o.Str("url", img.url);
 		}

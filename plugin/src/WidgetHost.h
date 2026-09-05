@@ -1,5 +1,7 @@
 #pragma once
 
+#include <unordered_set>
+
 #include "PrismaUI_API.h"
 
 // Owns the PrismaUI view and everything shared between the Papyrus natives and
@@ -29,6 +31,12 @@ public:
 
 	// Queue one JSON op for the view. Ordered; safe from any Papyrus thread.
 	void Send(std::string json);
+
+	// True exactly once per (view lifetime, image file): the first loadWidget
+	// for a file ships the decoded pixels, later ones carry only the cache key
+	// and the view reuses its copy. Reset every time the view DOM (re)readies,
+	// because a fresh JS heap has an empty cache.
+	bool ShouldSendPixels(const std::string& key);
 
 	struct ImageData
 	{
@@ -75,7 +83,12 @@ public:
 private:
 	WidgetHost() = default;
 
-	void Dispatch(const std::string& json);  // task-queued InteropCall
+	// Ops are coalesced into one InteropCall per game-frame task: PrismaUI runs
+	// each InteropCall as a separate Ultralight-thread task, so per-op calls
+	// made a consumer reload wave (hundreds of ops) take visible seconds to
+	// apply. A JSON-array batch applies in a single hop.
+	void EnqueueOp(std::string json);
+	void FlushBatch();
 
 	void ApplyVisibility();
 
@@ -90,6 +103,9 @@ private:
 
 	mutable std::mutex mtx_;
 	std::vector<std::string> pending_;
+	std::vector<std::string> batch_;
+	bool flushQueued_ = false;
+	std::unordered_set<std::string> pushedImages_;
 	std::unordered_map<int, std::pair<int, int>> metrics_;
 	std::unordered_map<std::string, ImageData> imageCache_;
 	// Must stay the last member: it is destroyed (stop requested + joined)

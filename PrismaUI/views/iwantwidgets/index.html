@@ -59,6 +59,11 @@
 
 const stage = document.getElementById('stage');
 const widgets = new Map();      // id -> state
+// Decoded image data by file key. The DLL sends a file's pixels only once per
+// view lifetime; every later loadWidget of that file carries just the key.
+// Survives reset() on purpose - the DLL's sent-set matches this cache's life.
+const imageCache = new Map();   // file -> {pixels?|frames?, pw, ph}
+const imageWaiters = new Map(); // file -> [widget] loaded before their pixels arrived
 let lowestWidget = 0;           // ids below this are from before the last reset
 let zTop = 1;
 let zBottom = 0;
@@ -200,6 +205,41 @@ function applyTint(w) {
   if (w.type === 'image') paintImage(w);
 }
 
+/* Wire a widget to a decoded image (shared, read-only across widgets that use
+   the same file; each widget keeps its own frame index and timer). */
+function attachImage(w, entry) {
+  w.pw = entry.pw;
+  w.ph = entry.ph;
+  if (entry.frames) {
+    w.frames = entry.frames;
+    w.pixels = entry.frames[0].data;
+    paintImage(w);
+    setContentSize(w, entry.pw, entry.ph);
+    const step = () => {
+      w.frameIdx = (w.frameIdx + 1) % w.frames.length;
+      w.pixels = w.frames[w.frameIdx].data;
+      paintImage(w);
+      w.animTimer = setTimeout(step, w.frames[w.frameIdx].ms);
+    };
+    w.animTimer = setTimeout(step, w.frames[0].ms);
+  } else {
+    w.pixels = entry.pixels;
+    paintImage(w);
+    setContentSize(w, entry.pw, entry.ph);
+  }
+}
+
+function cacheImage(file, entry) {
+  imageCache.set(file, entry);
+  const q = imageWaiters.get(file);
+  if (q) {
+    imageWaiters.delete(file);
+    for (const w of q) {
+      if (widgets.get(w.id) === w) attachImage(w, entry);
+    }
+  }
+}
+
 function shouldDraw(id, skipInvisible, skipAlpha0) {
   // No lowestWidget gate: reset() clears the widget map, so any widget still
   // present was created after the last reset — a stale-id skip could only
@@ -317,6 +357,8 @@ const OPS = {
     tweens.clear();
     widgets.forEach(w => { clearTimeout(w.animTimer); w.el.remove(); });
     widgets.clear();
+    imageWaiters.clear();
+    // imageCache intentionally survives: the DLL's per-view sent-set does too.
     stage.style.visibility = 'visible';
   },
 
@@ -329,26 +371,29 @@ const OPS = {
     w.inner.appendChild(cv);
     if (a.frames) {
       // Animated icon: composited GIF frames or spritesheet slices.
-      w.frames = a.frames.map(f => ({ ms: f.ms, data: b64ToPixels(f.px) }));
-      w.pw = a.w;
-      w.ph = a.h;
-      w.pixels = w.frames[0].data;
-      paintImage(w);
-      setContentSize(w, a.w, a.h);
-      const step = () => {
-        w.frameIdx = (w.frameIdx + 1) % w.frames.length;
-        w.pixels = w.frames[w.frameIdx].data;
-        paintImage(w);
-        w.animTimer = setTimeout(step, w.frames[w.frameIdx].ms);
+      const entry = {
+        frames: a.frames.map(f => ({ ms: f.ms, data: b64ToPixels(f.px) })),
+        pw: a.w, ph: a.h
       };
-      w.animTimer = setTimeout(step, w.frames[0].ms);
+      if (a.file) cacheImage(a.file, entry);
+      attachImage(w, entry);
     } else if (a.px) {
       // Raw RGBA from the DLL's decoder.
-      w.pixels = b64ToPixels(a.px);
-      w.pw = a.w;
-      w.ph = a.h;
-      paintImage(w);
-      setContentSize(w, a.w, a.h);
+      const entry = { pixels: b64ToPixels(a.px), pw: a.w, ph: a.h };
+      if (a.file) cacheImage(a.file, entry);
+      attachImage(w, entry);
+    } else if (a.file) {
+      const entry = imageCache.get(a.file);
+      if (entry) {
+        attachImage(w, entry);
+      } else {
+        // Two Papyrus threads can load the same new file concurrently: the
+        // loser's op has no pixels and may arrive before the winner's. Park
+        // the widget; cacheImage() fills it in when the pixels land.
+        let q = imageWaiters.get(a.file);
+        if (!q) { q = []; imageWaiters.set(a.file, q); }
+        q.push(w);
+      }
     } else {
       const img = new Image();
       w.imgSrcEl = img;
@@ -603,14 +648,32 @@ function placeOnArc(a, list, startAngle) {
   }
 }
 
-/* Single entry point the DLL invokes: InteropCall("iwCall", json). */
-window.iwCall = function (json) {
+/* Single entry point the DLL invokes: InteropCall("iwCall", json).
+   The payload is one op object or an array of them (the DLL batches every op
+   queued in a frame into one call - per-op InteropCalls made big consumer
+   reload waves take visible seconds to apply). One bad op must not take down
+   the rest of its batch, so each dispatch is guarded separately. */
+function runOp(a) {
   try {
-    const a = JSON.parse(json);
     const op = OPS[a.op];
     if (op) op(a);
   } catch (e) {
-    console.error('iwCall failed: ' + e + ' payload: ' + String(json).slice(0, 200));
+    console.error('op ' + (a && a.op) + ' failed: ' + e);
+  }
+}
+
+window.iwCall = function (json) {
+  let a;
+  try {
+    a = JSON.parse(json);
+  } catch (e) {
+    console.error('iwCall parse failed: ' + e + ' payload: ' + String(json).slice(0, 200));
+    return;
+  }
+  if (Array.isArray(a)) {
+    for (const x of a) runOp(x);
+  } else {
+    runOp(a);
   }
 };
 </script>
