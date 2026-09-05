@@ -4,7 +4,10 @@
 #include <cctype>
 #include <cstdio>
 #include <cstring>
+#include <regex>
 #include <set>
+
+#include <propidl.h>
 
 #include <objbase.h>
 #include <shlwapi.h>
@@ -107,6 +110,196 @@ namespace
 			return true;
 		}();
 		(void)initialized;
+	}
+
+	UINT ReadMetaUInt(IWICMetadataQueryReader* reader, const wchar_t* name, UINT fallback)
+	{
+		if (!reader) {
+			return fallback;
+		}
+		PROPVARIANT v;
+		PropVariantInit(&v);
+		UINT out = fallback;
+		if (SUCCEEDED(reader->GetMetadataByName(name, &v))) {
+			switch (v.vt) {
+			case VT_UI1:
+				out = v.bVal;
+				break;
+			case VT_UI2:
+				out = v.uiVal;
+				break;
+			case VT_UI4:
+				out = v.ulVal;
+				break;
+			}
+		}
+		PropVariantClear(&v);
+		return out;
+	}
+
+	constexpr std::size_t MAX_ANIM_FRAMES = 64;
+
+	// Extract an animated GIF as fully-composited RGBA frames. GIF frames are
+	// partial rectangles layered per a disposal method (1 keep, 2 clear the
+	// frame rect, 3 restore the pre-frame canvas), so each emitted frame is
+	// the composited logical screen. Returns false for still GIFs.
+	bool DecodeGifFrames(const std::vector<std::uint8_t>& bytes, WidgetHost::ImageData& data)
+	{
+		EnsureCom();
+
+		ComPtr<IWICImagingFactory> factory;
+		if (FAILED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
+				IID_PPV_ARGS(&factory)))) {
+			return false;
+		}
+		ComPtr<IStream> in(SHCreateMemStream(bytes.data(), static_cast<UINT>(bytes.size())));
+		ComPtr<IWICBitmapDecoder> decoder;
+		if (!in || FAILED(factory->CreateDecoderFromStream(in.Get(), nullptr,
+					  WICDecodeMetadataCacheOnDemand, &decoder))) {
+			return false;
+		}
+
+		UINT count = 0;
+		if (FAILED(decoder->GetFrameCount(&count)) || count <= 1) {
+			return false;
+		}
+		count = static_cast<UINT>(std::min<std::size_t>(count, MAX_ANIM_FRAMES));
+
+		UINT sw = 0, sh = 0;
+		{
+			ComPtr<IWICMetadataQueryReader> mr;
+			if (SUCCEEDED(decoder->GetMetadataQueryReader(&mr))) {
+				sw = ReadMetaUInt(mr.Get(), L"/logscrdesc/Width", 0);
+				sh = ReadMetaUInt(mr.Get(), L"/logscrdesc/Height", 0);
+			}
+		}
+
+		std::vector<std::uint8_t> canvas;
+		for (UINT i = 0; i < count; ++i) {
+			ComPtr<IWICBitmapFrameDecode> frame;
+			if (FAILED(decoder->GetFrame(i, &frame))) {
+				break;
+			}
+			UINT fw = 0, fh = 0;
+			frame->GetSize(&fw, &fh);
+
+			UINT left = 0, top = 0, delayCs = 10, disposal = 0;
+			{
+				ComPtr<IWICMetadataQueryReader> fr;
+				if (SUCCEEDED(frame->GetMetadataQueryReader(&fr))) {
+					left = ReadMetaUInt(fr.Get(), L"/imgdesc/Left", 0);
+					top = ReadMetaUInt(fr.Get(), L"/imgdesc/Top", 0);
+					delayCs = ReadMetaUInt(fr.Get(), L"/grctlext/Delay", 10);
+					disposal = ReadMetaUInt(fr.Get(), L"/grctlext/Disposal", 0);
+				}
+			}
+
+			if (i == 0) {
+				if (!sw || !sh) {
+					sw = left + fw;
+					sh = top + fh;
+				}
+				canvas.assign(static_cast<std::size_t>(sw) * sh * 4, 0);
+			}
+
+			ComPtr<IWICBitmapSource> conv;
+			if (FAILED(WICConvertBitmapSource(GUID_WICPixelFormat32bppRGBA, frame.Get(),
+					&conv))) {
+				break;
+			}
+			std::vector<std::uint8_t> fpix(static_cast<std::size_t>(fw) * fh * 4);
+			if (FAILED(conv->CopyPixels(nullptr, fw * 4, static_cast<UINT>(fpix.size()),
+					fpix.data()))) {
+				break;
+			}
+
+			std::vector<std::uint8_t> before;
+			if (disposal == 3) {
+				before = canvas;
+			}
+
+			for (UINT y = 0; y < fh && top + y < sh; ++y) {
+				for (UINT x = 0; x < fw && left + x < sw; ++x) {
+					const std::uint8_t* s = &fpix[(static_cast<std::size_t>(y) * fw + x) * 4];
+					if (s[3] != 0) {
+						std::uint8_t* d = &canvas
+							[((static_cast<std::size_t>(top) + y) * sw + left + x) * 4];
+						d[0] = s[0];
+						d[1] = s[1];
+						d[2] = s[2];
+						d[3] = s[3];
+					}
+				}
+			}
+
+			// Sub-2cs delays are treated as 100ms by every renderer out there.
+			const int ms = (delayCs < 2) ? 100 : static_cast<int>(delayCs) * 10;
+			data.frames.push_back({ ms, Base64(canvas.data(), canvas.size()) });
+
+			if (disposal == 2) {
+				const UINT clearW = (std::min)(fw, sw - (std::min)(left, sw));
+				for (UINT y = 0; y < fh && top + y < sh; ++y) {
+					std::memset(&canvas[((static_cast<std::size_t>(top) + y) * sw + left) * 4],
+						0, static_cast<std::size_t>(clearW) * 4);
+				}
+			} else if (disposal == 3) {
+				canvas = std::move(before);
+			}
+		}
+
+		if (data.frames.size() <= 1) {
+			data.frames.clear();
+			return false;
+		}
+		data.w = static_cast<int>(sw);
+		data.h = static_cast<int>(sh);
+		return true;
+	}
+
+	// Spritesheet convention: a filename ending `_<N>f[@<ms>].<ext>` is cut
+	// into N frames - stacked vertically when the height divides evenly,
+	// side-by-side otherwise. Works for any decodable format (DDS included).
+	bool SliceSpritesheet(const std::string& file, const std::vector<std::uint8_t>& rgba,
+		int w, int h, WidgetHost::ImageData& data)
+	{
+		static const std::regex animRe(R"(_(\d+)f(?:@(\d+))?\.[^.\\/]+$)",
+			std::regex::icase);
+		std::smatch m;
+		if (!std::regex_search(file, m, animRe)) {
+			return false;
+		}
+		const int n = std::clamp(std::stoi(m[1].str()), 2,
+			static_cast<int>(MAX_ANIM_FRAMES));
+		const int ms = std::clamp(m[2].matched ? std::stoi(m[2].str()) : 100, 20, 10000);
+
+		if (h % n == 0) {
+			const int fh = h / n;
+			const std::size_t frameBytes = static_cast<std::size_t>(w) * fh * 4;
+			for (int i = 0; i < n; ++i) {
+				data.frames.push_back({ ms, Base64(rgba.data() + i * frameBytes, frameBytes) });
+			}
+			data.w = w;
+			data.h = fh;
+		} else if (w % n == 0) {
+			const int fw = w / n;
+			std::vector<std::uint8_t> fpix(static_cast<std::size_t>(fw) * h * 4);
+			for (int i = 0; i < n; ++i) {
+				for (int y = 0; y < h; ++y) {
+					std::memcpy(&fpix[static_cast<std::size_t>(y) * fw * 4],
+						&rgba[(static_cast<std::size_t>(y) * w + i * fw) * 4],
+						static_cast<std::size_t>(fw) * 4);
+				}
+				data.frames.push_back({ ms, Base64(fpix.data(), fpix.size()) });
+			}
+			data.w = fw;
+			data.h = h;
+		} else {
+			logger::error(
+				"loadWidget: '{}' declares {} frames but neither {}x{} dimension divides",
+				file, n, w, h);
+			return false;
+		}
+		return true;
 	}
 
 	// Decode an image to raw RGBA via WIC. The primary path handles anything
@@ -389,24 +582,30 @@ const WidgetHost::ImageData& WidgetHost::LoadImageFile(const std::string& file)
 		logger::error("loadWidget: cannot read '{}' (loose or BSA)", relPath);
 	} else if (ext == ".dds" || ext == ".png" || ext == ".jpg" || ext == ".jpeg" ||
 			   ext == ".gif") {
-		// GIF: first frame only - WIC decodes it like any still image here.
-		std::vector<std::uint8_t> rgba;
-		if (DecodeImageToRGBA(bytes, rgba, data.w, data.h)) {
-			data.px = Base64(rgba.data(), rgba.size());
-		} else if (ext != ".dds") {
-			// Last resort: hand the encoded file to the view's own loader.
-			const char* mime = (ext == ".png") ? "image/png" :
-							   (ext == ".gif") ? "image/gif" : "image/jpeg";
-			data.url = std::format("data:{};base64,{}", mime, Base64(bytes.data(), bytes.size()));
+		if (ext == ".gif" && DecodeGifFrames(bytes, data)) {
+			// Animated GIF: composited frames carry it from here.
 		} else {
-			logger::error("loadWidget: decode failed for '{}'", relPath);
+			std::vector<std::uint8_t> rgba;
+			if (DecodeImageToRGBA(bytes, rgba, data.w, data.h)) {
+				if (!SliceSpritesheet(file, rgba, data.w, data.h, data)) {
+					data.px = Base64(rgba.data(), rgba.size());
+				}
+			} else if (ext != ".dds") {
+				// Last resort: hand the encoded file to the view's own loader.
+				const char* mime = (ext == ".png") ? "image/png" :
+								   (ext == ".gif") ? "image/gif" : "image/jpeg";
+				data.url = std::format("data:{};base64,{}", mime,
+					Base64(bytes.data(), bytes.size()));
+			} else {
+				logger::error("loadWidget: decode failed for '{}'", relPath);
+			}
 		}
 	} else {
 		// .swf widgets cannot be rendered outside Scaleform.
 		logger::error("loadWidget: unsupported format '{}' for '{}'", ext, relPath);
 	}
 
-	if (data.px.empty() && data.url.empty()) {
+	if (data.px.empty() && data.url.empty() && data.frames.empty()) {
 		// 1x1 transparent pixel so a bad path degrades to an invisible widget
 		// instead of a broken-image glyph.
 		data.px = "AAAAAA==";
@@ -499,6 +698,13 @@ namespace Json
 	{
 		Comma();
 		body_ += std::format(R"("{}":{})", key, value ? "true" : "false");
+		return *this;
+	}
+
+	Obj& Obj::Raw(std::string_view key, std::string_view rawJson)
+	{
+		Comma();
+		body_ += std::format(R"("{}":{})", key, rawJson);
 		return *this;
 	}
 

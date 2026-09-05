@@ -88,6 +88,13 @@ function mapFont(f) {
   return FONTS[String(f).toLowerCase()] || (f + ", 'Arial Narrow', sans-serif");
 }
 
+function b64ToPixels(b64) {
+  const bin = atob(b64);
+  const px = new Uint8ClampedArray(bin.length);
+  for (let i = 0; i < bin.length; i++) px[i] = bin.charCodeAt(i);
+  return px;
+}
+
 /* ---------- registry / DOM ---------- */
 function makeWidget(id, type, x, y, visible) {
   const el = document.createElement('div');
@@ -101,8 +108,9 @@ function makeWidget(id, type, x, y, visible) {
     x, y, xscale: 100, yscale: 100, rotation: 0, alpha: 100,
     visible: !!visible, tint: null, tintRGB: null,
     cw: 0, ch: 0,                    // content size in px (pre-scale)
-    pixels: null, pw: 0, ph: 0,      // raw RGBA + natural size (DDS path)
-    imgSrcEl: null,                  // off-DOM Image (PNG/JPG path)
+    pixels: null, pw: 0, ph: 0,      // raw RGBA + natural size
+    frames: null, frameIdx: 0, animTimer: 0,  // animated icons
+    imgSrcEl: null,                  // off-DOM Image (data-URL fallback path)
     z: ++zTop,
     meter: null
   };
@@ -307,7 +315,7 @@ const OPS = {
     lowestWidget = a.nextId;
     tweens.forEach((t) => { cancelAnimationFrame(t.raf); clearTimeout(t.timer); });
     tweens.clear();
-    widgets.forEach(w => w.el.remove());
+    widgets.forEach(w => { clearTimeout(w.animTimer); w.el.remove(); });
     widgets.clear();
     stage.style.visibility = 'visible';
   },
@@ -318,12 +326,24 @@ const OPS = {
     cv.width = Math.max(1, a.w);
     cv.height = Math.max(1, a.h);
     w.inner.appendChild(cv);
-    if (a.px) {
-      // Raw RGBA from the DLL's DDS decoder.
-      const bin = atob(a.px);
-      const px = new Uint8ClampedArray(bin.length);
-      for (let i = 0; i < bin.length; i++) px[i] = bin.charCodeAt(i);
-      w.pixels = px;
+    if (a.frames) {
+      // Animated icon: composited GIF frames or spritesheet slices.
+      w.frames = a.frames.map(f => ({ ms: f.ms, data: b64ToPixels(f.px) }));
+      w.pw = a.w;
+      w.ph = a.h;
+      w.pixels = w.frames[0].data;
+      paintImage(w);
+      setContentSize(w, a.w, a.h);
+      const step = () => {
+        w.frameIdx = (w.frameIdx + 1) % w.frames.length;
+        w.pixels = w.frames[w.frameIdx].data;
+        paintImage(w);
+        w.animTimer = setTimeout(step, w.frames[w.frameIdx].ms);
+      };
+      w.animTimer = setTimeout(step, w.frames[0].ms);
+    } else if (a.px) {
+      // Raw RGBA from the DLL's decoder.
+      w.pixels = b64ToPixels(a.px);
       w.pw = a.w;
       w.ph = a.h;
       paintImage(w);
@@ -458,6 +478,7 @@ const OPS = {
     if (!w) return;
     ['_x', '_y', '_xscale', '_yscale', '_rotation', '_alpha', 'percent']
       .forEach(attr => killTween(a.id + ':' + attr));
+    clearTimeout(w.animTimer);
     w.el.remove();
     widgets.delete(a.id);
   },

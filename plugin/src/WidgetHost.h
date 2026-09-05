@@ -32,11 +32,21 @@ public:
 
 	struct ImageData
 	{
-		// DDS is decoded to raw RGBA and shipped as base64 pixels (px) — the
-		// view paints them on a canvas, bypassing Ultralight's image loader
-		// and CSS-mask support entirely. PNG/JPG pass through as a data URL.
-		std::string px;   // base64 of w*h*4 RGBA bytes (DDS path)
-		std::string url;  // data: URL (PNG/JPG passthrough path)
+		// Images are decoded to raw RGBA and shipped as base64 pixels (px) —
+		// the view paints them on a canvas, bypassing Ultralight's image
+		// loader and CSS-mask support entirely. Encoded data: URLs remain
+		// only as a last-resort fallback.
+		//
+		// Animated icons carry `frames` instead of `px`: composited GIF
+		// frames, or slices of a spritesheet named `*_<N>f[@<ms>].<ext>`.
+		struct Frame
+		{
+			int ms = 100;
+			std::string px;
+		};
+		std::string px;
+		std::string url;
+		std::vector<Frame> frames;
 		int w = 0;
 		int h = 0;
 	};
@@ -83,6 +93,7 @@ namespace Json
 		Obj& Int(std::string_view key, std::int64_t value);
 		Obj& Boolean(std::string_view key, bool value);
 		Obj& IntArray(std::string_view key, const std::vector<std::int32_t>& values);
+		Obj& Raw(std::string_view key, std::string_view rawJson);
 		std::string Build();
 
 	private:

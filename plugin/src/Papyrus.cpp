@@ -23,7 +23,18 @@ namespace
 		host.SetMetrics(id, img.w, img.h);
 		Json::Obj o;
 		o.Str("op", "loadWidget").Int("id", id);
-		if (!img.px.empty()) {
+		if (!img.frames.empty()) {
+			std::string arr = "[";
+			for (std::size_t i = 0; i < img.frames.size(); ++i) {
+				if (i) {
+					arr += ',';
+				}
+				arr += std::format(R"({{"ms":{},"px":"{}"}})", img.frames[i].ms,
+					img.frames[i].px);
+			}
+			arr += ']';
+			o.Raw("frames", arr);
+		} else if (!img.px.empty()) {
 			o.Str("px", img.px);
 		} else {
 			o.Str("url", img.url);
