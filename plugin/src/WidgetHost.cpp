@@ -57,7 +57,11 @@ namespace
 				do {
 					got = stream.read(buf, CHUNK);
 					out.insert(out.end(), buf, buf + got);
-				} while (got == CHUNK);
+					// Loop until a zero read: BSResource can return short reads
+					// mid-file, so `got < CHUNK` is not EOF. Stopping there
+					// truncated every file over one chunk (512x512 icons) and
+					// fed WIC a valid header with missing pixels.
+				} while (got > 0);
 				if (!out.empty()) {
 					return true;
 				}
