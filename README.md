@@ -31,6 +31,7 @@ The Flash original has structural problems this edition removes at the root:
 | Pipe-delimited string protocol (documented Cyrillic issues) | JSON over PrismaUI interop |
 | 1280×720 Flash stage upscaled by the game (blurry icons) | Same virtual 1280×720 coordinate space, but rendered at native resolution |
 | Requires SkyUI's widget loader | SkyUI not required by the widget layer |
+| Icons limited to DDS (SWF for anything fancier) | Decodes **DDS, PNG, JPG, GIF (incl. animated), and `_<N>f` spritesheets** — any format the consumer requests |
 
 ## Architecture
 
@@ -42,7 +43,7 @@ iwant_widgets.psc      ← this repo: same script name & signatures, extends Que
         │  Global Native calls
         ▼
 iWantWidgetsNative.psc ↔ iWantWidgetsPrisma.dll   (id allocation, JSON ops,
-        │                                          DDS→PNG decode, metrics cache)
+        │                                          WIC image decode, metrics cache)
         ▼  InteropCall("iwCall", json)
 PrismaUI/views/iwantwidgets/index.html            (widget registry, transforms,
                                                    tweens, shapes, meters, text)
@@ -161,12 +162,23 @@ Data/
   reported back asynchronously — a call in the same Papyrus instant as
   `loadText`/`setText` may read 0. (DDS widgets report instantly from the
   decoder; Status Bars never calls these.)
-- **Formats.** The renderer decodes exactly the file the consumer asks for, by
-  its extension: DDS/PNG/JPG/GIF (animated GIF too), plus a `*_<N>f[@ms].<ext>`
-  spritesheet. It is **format-agnostic and does no extension guessing or folder
-  scanning** — choosing which file/format to request is the consumer's job
-  (e.g. SL Widgets decides its own icon paths). Pass `foo.png` and it renders a
-  PNG; pass `foo_8f.png` and it animates 8 frames.
+- **File formats.** The renderer decodes exactly the file the consumer asks
+  for, by its extension:
+  - `.dds` (incl. BC-compressed), `.png`, `.jpg`/`.jpeg` — static images.
+  - `.gif` — animated (per-frame delays honored; composited via GIF disposal
+    rules). A single-frame GIF renders static.
+  - **Spritesheet** `name_<N>f[@ms].<ext>` — `N` frames played in sequence at
+    `ms` per frame (default 100), e.g. `flame_8f.png` or `pulse_4f@70.dds`.
+    Frames stack vertically (preferred) or horizontally; works for any of the
+    formats above, DDS included. 64-frame cap.
+  It is **format-agnostic and does no extension guessing or folder scanning** —
+  which file to request is the consumer's job. Pack authors opt in per consumer:
+  - **SL Widgets** auto-prefers a `.gif` then `.png` sibling of the expected
+    `.dds` (`slw_util.resolveIconFiles`), so a pack just drops `aroused0.png`
+    or an animated `aroused0.gif` beside `aroused0.dds` — ship all of one
+    icon's states in the same format.
+  - Other consumers get the format by passing that path to `loadWidget`
+    directly (`loadWidget("…/foo_8f.png")`).
 - `loadWidget` with a `.swf` path cannot render (logged, becomes invisible).
 - Shape draws treat a nonexistent widget id as skippable even when
   `skipInvisible = False`; the Flash original consumed an angle/offset step in
