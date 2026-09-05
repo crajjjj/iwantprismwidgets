@@ -44,10 +44,23 @@ namespace
 		return s;
 	}
 
-	// Reads through the game's resource system, so both loose files and BSA
-	// archives resolve. Path is relative to Data\ with backslash separators.
+	// Reads loose files and BSA contents. Loose first via plain ifstream:
+	// MO2's VFS hooks CreateFile, so virtualized files resolve, and loose
+	// beats BSA in the game's own precedence anyway. BSResource is only the
+	// BSA fallback because its stream read has returned short/truncated data
+	// for multi-chunk files (the 512x512 icons) in ways WIC then rejects.
 	bool ReadGameFile(const std::string& relPath, std::vector<std::uint8_t>& out)
 	{
+		{
+			std::ifstream f("Data\\" + relPath, std::ios::binary);
+			if (f) {
+				out.assign(std::istreambuf_iterator<char>(f),
+					std::istreambuf_iterator<char>());
+				if (!out.empty()) {
+					return true;
+				}
+			}
+		}
 		{
 			RE::BSResourceNiBinaryStream stream(relPath);
 			if (stream.good()) {
@@ -57,23 +70,14 @@ namespace
 				do {
 					got = stream.read(buf, CHUNK);
 					out.insert(out.end(), buf, buf + got);
-					// Loop until a zero read: BSResource can return short reads
-					// mid-file, so `got < CHUNK` is not EOF. Stopping there
-					// truncated every file over one chunk (512x512 icons) and
-					// fed WIC a valid header with missing pixels.
+					// Loop until a zero read: short reads mid-file are not EOF.
 				} while (got > 0);
 				if (!out.empty()) {
 					return true;
 				}
 			}
 		}
-		// Fallback: plain loose-file read relative to the game directory.
-		// Still VFS-aware under MO2 (the hook is process-wide).
-		std::ifstream f("Data\\" + relPath, std::ios::binary);
-		if (f) {
-			out.assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
-		}
-		return !out.empty();
+		return false;
 	}
 
 	std::string Base64(const std::uint8_t* data, std::size_t len)
@@ -692,7 +696,10 @@ const WidgetHost::ImageData& WidgetHost::LoadImageFile(const std::string& file)
 				data.url = std::format("data:{};base64,{}", mime,
 					Base64(bytes.data(), bytes.size()));
 			} else {
-				logger::error("loadWidget: decode failed for '{}'", relPath);
+				// The byte count separates a truncated read (count under the
+				// file's real size) from a decoder-side rejection.
+				logger::error("loadWidget: decode failed for '{}' ({} bytes read)",
+					relPath, bytes.size());
 			}
 		}
 	} else {
