@@ -232,7 +232,7 @@ namespace
 				} else {
 					open_.erase(std::string(name));
 				}
-				WidgetHost::Get().SetOverlayVisible(open_.empty());
+				WidgetHost::Get().SetMenusClear(open_.empty());
 			}
 			return RE::BSEventNotifyControl::kContinue;
 		}
@@ -282,11 +282,36 @@ void WidgetHost::OnDataLoaded()
 		ui->AddEventSink(MenuWatcher::GetSingleton());
 	}
 
+	// There is no event for the global menus-shown flag (`tm`, and native
+	// HUD-hiders like SexLab's Hide HUD flip it directly), so poll it.
+	std::thread([]() {
+		for (;;) {
+			std::this_thread::sleep_for(std::chrono::milliseconds(250));
+			if (auto* ui = RE::UI::GetSingleton()) {
+				WidgetHost::Get().SetGameHudShown(ui->IsShowingMenus());
+			}
+		}
+	}).detach();
+
 	logger::info("iWant Widgets view created ({})", VIEW_PATH);
 }
 
-void WidgetHost::SetOverlayVisible(bool visible)
+void WidgetHost::SetMenusClear(bool clear)
 {
+	menusClear_ = clear;
+	ApplyVisibility();
+}
+
+void WidgetHost::SetGameHudShown(bool shown)
+{
+	if (gameHudShown_.exchange(shown) != shown) {
+		ApplyVisibility();
+	}
+}
+
+void WidgetHost::ApplyVisibility()
+{
+	const bool visible = menusClear_.load() && gameHudShown_.load();
 	if (overlayVisible_.exchange(visible) == visible) {
 		return;
 	}
