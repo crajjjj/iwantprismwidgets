@@ -109,10 +109,11 @@ namespace
 		(void)initialized;
 	}
 
-	// Decode DDS to raw RGBA via Windows' built-in WIC DDS codec (covers
-	// DXT1/3/5 and DX10-header formats), with a manual fallback for legacy
-	// uncompressed 32bpp DDS files the codec rejects.
-	bool DecodeDDSToRGBA(const std::vector<std::uint8_t>& dds, std::vector<std::uint8_t>& rgba,
+	// Decode an image to raw RGBA via WIC. The primary path handles anything
+	// WIC decodes from memory - DDS (DXT1/3/5 and DX10-header formats), PNG,
+	// JPEG - with a manual fallback for legacy uncompressed 32bpp DDS files
+	// the codec rejects.
+	bool DecodeImageToRGBA(const std::vector<std::uint8_t>& dds, std::vector<std::uint8_t>& rgba,
 		int& w, int& h)
 	{
 		EnsureCom();
@@ -386,16 +387,17 @@ const WidgetHost::ImageData& WidgetHost::LoadImageFile(const std::string& file)
 	std::vector<std::uint8_t> bytes;
 	if (!ReadGameFile(relPath, bytes)) {
 		logger::error("loadWidget: cannot read '{}' (loose or BSA)", relPath);
-	} else if (ext == ".dds") {
+	} else if (ext == ".dds" || ext == ".png" || ext == ".jpg" || ext == ".jpeg") {
 		std::vector<std::uint8_t> rgba;
-		if (DecodeDDSToRGBA(bytes, rgba, data.w, data.h)) {
+		if (DecodeImageToRGBA(bytes, rgba, data.w, data.h)) {
 			data.px = Base64(rgba.data(), rgba.size());
+		} else if (ext != ".dds") {
+			// Last resort: hand the encoded file to the view's own loader.
+			const char* mime = (ext == ".png") ? "image/png" : "image/jpeg";
+			data.url = std::format("data:{};base64,{}", mime, Base64(bytes.data(), bytes.size()));
 		} else {
-			logger::error("loadWidget: DDS decode failed for '{}'", relPath);
+			logger::error("loadWidget: decode failed for '{}'", relPath);
 		}
-	} else if (ext == ".png" || ext == ".jpg" || ext == ".jpeg") {
-		const char* mime = (ext == ".png") ? "image/png" : "image/jpeg";
-		data.url = std::format("data:{};base64,{}", mime, Base64(bytes.data(), bytes.size()));
 	} else {
 		// .swf widgets cannot be rendered outside Scaleform.
 		logger::error("loadWidget: unsupported format '{}' for '{}'", ext, relPath);
