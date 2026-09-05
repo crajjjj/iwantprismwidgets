@@ -21,7 +21,6 @@ namespace
 		const auto& img = host.LoadImageFile(file);
 		const int id = host.NextId();
 		host.SetMetrics(id, img.w, img.h);
-		logger::info("DIAG loadWidget: id={} file={}", id, file);
 		Json::Obj o;
 		o.Str("op", "loadWidget").Int("id", id);
 		if (!img.frames.empty() || !img.px.empty()) {
@@ -115,18 +114,12 @@ namespace
 
 	void SetPos(Tag*, std::int32_t id, std::int32_t x, std::int32_t y)
 	{
-		// DIAG: moving a widget off-stage is how _moveIconOffscreen hides an
-		// icon whose _findBarOfIcon returned -1. Log it to catch vanishings.
-		if (x >= 9000 || y >= 9000) {
-			logger::info("DIAG offscreen: setPos id={} -> {},{}", id, x, y);
-		}
 		WidgetHost::Get().Send(
 			Json::Obj().Str("op", "setPos").Int("id", id).Int("x", x).Int("y", y).Build());
 	}
 
 	void SetSize(Tag*, std::int32_t id, std::int32_t h, std::int32_t w)
 	{
-		logger::info("DIAG setSize: id={} {}x{}", id, w, h);
 		WidgetHost::Get().SetMetrics(id, w, h);
 		WidgetHost::Get().Send(
 			Json::Obj().Str("op", "setSize").Int("id", id).Int("w", w).Int("h", h).Build());
@@ -150,9 +143,6 @@ namespace
 
 	void SetVisible(Tag*, std::int32_t id, std::int32_t visible)
 	{
-		if (visible == 0) {
-			logger::info("DIAG hide: setVisible id={} -> false", id);
-		}
 		WidgetHost::Get().Send(
 			Json::Obj().Str("op", "setVisible").Int("id", id).Boolean("vis", visible != 0).Build());
 	}
@@ -171,7 +161,6 @@ namespace
 
 	void SetRGB(Tag*, std::int32_t id, std::int32_t r, std::int32_t g, std::int32_t b)
 	{
-		logger::info("DIAG setRGB: id={} rgb={},{},{}", id, r, g, b);
 		const std::int32_t rgb = (r << 16) | (g << 8) | b;
 		WidgetHost::Get().Send(
 			Json::Obj().Str("op", "setColor").Int("id", id).Int("rgb", rgb).Build());
@@ -195,7 +184,6 @@ namespace
 
 	void Destroy(Tag*, std::int32_t id)
 	{
-		logger::info("DIAG destroy: id={}", id);
 		WidgetHost::Get().EraseMetrics(id);
 		WidgetHost::Get().Send(Json::Obj().Str("op", "destroy").Int("id", id).Build());
 	}
@@ -260,9 +248,6 @@ namespace
 	void DoTransition(Tag*, std::int32_t id, float target, float seconds, std::string attr,
 		std::string easingClass, std::string easingMethod, float delay)
 	{
-		if (attr == "_alpha") {
-			logger::info("DIAG doTransition alpha: id={} -> {} ({}s)", id, target, seconds);
-		}
 		WidgetHost::Get().Send(Json::Obj()
 				.Str("op", "doTransition")
 				.Int("id", id)

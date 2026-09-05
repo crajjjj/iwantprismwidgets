@@ -502,25 +502,17 @@ void WidgetHost::OnDataLoaded()
 		}
 	});
 
-	// DIAG: v1-safe view->DLL channel for the hidden-icon anomaly probe.
-	api_->RegisterJSListener(view_, "iwDiag", [](const char* arg) {
-		if (arg) {
-			logger::info("VIEWDIAG: {}", arg);
-		}
-	});
-
-	// DIAG: capture the view's own console.log into our log (needs PrismaUI's
-	// v2 interface; nullptr if the installed PrismaUI is too old to support it).
+	// Surface the view's console warnings/errors (a failed op logs through
+	// console.error) in our log. Needs PrismaUI's v2 interface; on an older
+	// PrismaUI the view still works, just without error capture.
 	if (auto* api2 = PRISMA_UI_API::RequestPluginAPI<PRISMA_UI_API::IVPrismaUI2>()) {
 		api2->RegisterConsoleCallback(view_,
-			[](PrismaView, PRISMA_UI_API::ConsoleMessageLevel, const char* msg) {
-				if (msg) {
-					logger::info("VIEW: {}", msg);
+			[](PrismaView, PRISMA_UI_API::ConsoleMessageLevel level, const char* msg) {
+				if (msg && (level == PRISMA_UI_API::ConsoleMessageLevel::Error ||
+							   level == PRISMA_UI_API::ConsoleMessageLevel::Warning)) {
+					logger::error("view: {}", msg);
 				}
 			});
-		logger::info("DIAG: view console callback registered (v2)");
-	} else {
-		logger::info("DIAG: PrismaUI v2 unavailable - no view console capture");
 	}
 
 	if (auto* ui = RE::UI::GetSingleton()) {

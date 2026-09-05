@@ -498,21 +498,6 @@ const OPS = {
     w.tint = cssRGB(a.rgb);
     w.tintRGB = [(a.rgb >> 16) & 255, (a.rgb >> 8) & 255, a.rgb & 255];
     applyTint(w);
-    // DIAG: setRGB marks the newly-active state; if that widget is still
-    // hidden shortly after, report why (off-stage / alpha / visible / sized).
-    setTimeout(() => {
-      const v = widgets.get(a.id);
-      if (!v) { console.log('IWDIAG id=' + a.id + ' GONE-from-map'); return; }
-      const onStage = v.x > -50 && v.x < 1330 && v.y > -50 && v.y < 770;
-      const shown = v.visible && v.sized && v.alpha > 2;
-      if (!onStage || !shown) {
-        const m = 'id=' + a.id + ' HIDDEN x=' + Math.round(v.x) +
-          ' y=' + Math.round(v.y) + ' a=' + Math.round(v.alpha) +
-          ' vis=' + v.visible + ' sized=' + v.sized + ' z=' + v.z +
-          ' type=' + v.type;
-        if (typeof window.iwDiag === 'function') window.iwDiag(m); else console.log('IWDIAG ' + m);
-      }
-    }, 300);
   },
 
   toBack(a) {
