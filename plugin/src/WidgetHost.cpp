@@ -458,6 +458,9 @@ void WidgetHost::OnDataLoaded()
 	view_ = api_->CreateView(VIEW_PATH, [](PrismaView) {
 		auto& host = WidgetHost::Get();
 		logger::info("iWant Widgets view DOM ready");
+		// A freshly (re)created view needs one resync so consumers repopulate
+		// it; if Ultralight ever re-readies the DOM, this re-arms that.
+		host.viewFresh_.store(true);
 		// Flip domReady_ only once the queue is observed empty under the
 		// lock. A Send racing this drain still lands in pending_ (ready is
 		// false) and is picked up by the next pass - nothing can dispatch
@@ -485,6 +488,27 @@ void WidgetHost::OnDataLoaded()
 			WidgetHost::Get().SetMetrics(id, w, h);
 		}
 	});
+
+	// DIAG: v1-safe view->DLL channel for the hidden-icon anomaly probe.
+	api_->RegisterJSListener(view_, "iwDiag", [](const char* arg) {
+		if (arg) {
+			logger::info("VIEWDIAG: {}", arg);
+		}
+	});
+
+	// DIAG: capture the view's own console.log into our log (needs PrismaUI's
+	// v2 interface; nullptr if the installed PrismaUI is too old to support it).
+	if (auto* api2 = PRISMA_UI_API::RequestPluginAPI<PRISMA_UI_API::IVPrismaUI2>()) {
+		api2->RegisterConsoleCallback(view_,
+			[](PrismaView, PRISMA_UI_API::ConsoleMessageLevel, const char* msg) {
+				if (msg) {
+					logger::info("VIEW: {}", msg);
+				}
+			});
+		logger::info("DIAG: view console callback registered (v2)");
+	} else {
+		logger::info("DIAG: PrismaUI v2 unavailable - no view console capture");
+	}
 
 	if (auto* ui = RE::UI::GetSingleton()) {
 		ui->AddEventSink(MenuWatcher::GetSingleton());

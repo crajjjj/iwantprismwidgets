@@ -53,3 +53,8 @@ Function SetMeterColors(Int id, Int lightRGB, Int darkRGB, Int flashRGB) Global 
 ; Invalidates every existing widget id and clears the view. Fired on game
 ; load before the iWantWidgetsReset mod event goes out.
 Function Reset() Global Native
+
+; True until the first Reset of this game launch. The view persists across
+; save-loads within a launch, so a reset (which makes every consumer reload
+; all widgets) is only needed once per launch. The reset trigger gates on this.
+Bool Function NeedsResync() Global Native

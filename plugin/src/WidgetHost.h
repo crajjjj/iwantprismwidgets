@@ -61,6 +61,17 @@ public:
 	void EraseMetrics(int id);
 	void ClearAllMetrics();
 
+	// True until the first Reset of this launch. The Prisma view is created
+	// fresh once per launch (widget ids restart at 1) but PERSISTS across
+	// save-loads within a launch, while consumers' saved widget ids only match
+	// after a resync. So a reset is needed exactly once per launch — on the
+	// first load, when the fresh view and the save's ids disagree. Firing it
+	// on every load (as the alias otherwise would) makes every consumer reload
+	// all its widgets, which flattens icon alpha and churns. The alias gates
+	// its reset on this so a save-load within a session leaves the view alone.
+	bool NeedsResync() const { return viewFresh_.load(); }
+	void MarkResynced() { viewFresh_.store(false); }
+
 private:
 	WidgetHost() = default;
 
@@ -74,6 +85,7 @@ private:
 	std::atomic<bool> overlayVisible_{ true };
 	std::atomic<bool> menusClear_{ true };
 	std::atomic<bool> gameHudShown_{ true };
+	std::atomic<bool> viewFresh_{ true };
 	std::atomic<int> nextId_{ 1 };
 
 	mutable std::mutex mtx_;

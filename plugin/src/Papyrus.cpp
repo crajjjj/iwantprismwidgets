@@ -113,6 +113,7 @@ namespace
 
 	void SetSize(Tag*, std::int32_t id, std::int32_t h, std::int32_t w)
 	{
+		logger::info("DIAG setSize: id={} {}x{}", id, w, h);
 		WidgetHost::Get().SetMetrics(id, w, h);
 		WidgetHost::Get().Send(
 			Json::Obj().Str("op", "setSize").Int("id", id).Int("w", w).Int("h", h).Build());
@@ -157,6 +158,7 @@ namespace
 
 	void SetRGB(Tag*, std::int32_t id, std::int32_t r, std::int32_t g, std::int32_t b)
 	{
+		logger::info("DIAG setRGB: id={} rgb={},{},{}", id, r, g, b);
 		const std::int32_t rgb = (r << 16) | (g << 8) | b;
 		WidgetHost::Get().Send(
 			Json::Obj().Str("op", "setColor").Int("id", id).Int("rgb", rgb).Build());
@@ -245,6 +247,9 @@ namespace
 	void DoTransition(Tag*, std::int32_t id, float target, float seconds, std::string attr,
 		std::string easingClass, std::string easingMethod, float delay)
 	{
+		if (attr == "_alpha") {
+			logger::info("DIAG doTransition alpha: id={} -> {} ({}s)", id, target, seconds);
+		}
 		WidgetHost::Get().Send(Json::Obj()
 				.Str("op", "doTransition")
 				.Int("id", id)
@@ -289,9 +294,15 @@ namespace
 				.Build());
 	}
 
+	bool NeedsResync(Tag*)
+	{
+		return WidgetHost::Get().NeedsResync();
+	}
+
 	void Reset(Tag*)
 	{
 		auto& host = WidgetHost::Get();
+		host.MarkResynced();
 		// Ids are never reused, so every cached size belongs to a dead widget.
 		host.ClearAllMetrics();
 		host.Send(Json::Obj()
@@ -337,5 +348,6 @@ bool RegisterPapyrusFunctions(VM* vm)
 	vm->RegisterFunction("DoMeterFlash", SCRIPT, DoMeterFlash, true);
 	vm->RegisterFunction("SetMeterColors", SCRIPT, SetMeterColors, true);
 	vm->RegisterFunction("Reset", SCRIPT, Reset, true);
+	vm->RegisterFunction("NeedsResync", SCRIPT, NeedsResync, true);
 	return true;
 }

@@ -35,6 +35,15 @@ Event OnConsumerReady(String eventName, String strArg, Float numArg, Form sender
 EndEvent
 
 Function _startReset()
+	; The Prisma view persists across save-loads within a launch, so a reset
+	; (which makes every consumer reload ALL its widgets -- flattening icon
+	; alpha and churning) is only needed ONCE per launch: the first load, when
+	; the fresh view's ids and the save's ids disagree. On later same-session
+	; loads the DLL reports no resync needed and we leave the view untouched.
+	If !iWantWidgetsNative.NeedsResync()
+		Return
+	EndIf
+
 	; A newer load (OnInit + OnPlayerLoadGame both firing, or a reload during
 	; the burst) supersedes an in-flight burst via this generation token --
 	; the old While loop sees the mismatch after its next Wait and bails.
