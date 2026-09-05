@@ -16,6 +16,11 @@ public:
 
 	bool IsReady() const;
 
+	// Mirrors the vanilla HUD's visibility: the Flash original lived inside
+	// the HUD menu and was hidden with it (dialogue, inventory, loading...);
+	// the Prisma overlay has to follow menu open/close events explicitly.
+	void SetOverlayVisible(bool visible);
+
 	int NextId();
 	int PeekNextId() const;
 
@@ -49,6 +54,7 @@ private:
 	PRISMA_UI_API::IVPrismaUI1* api_ = nullptr;
 	PrismaView view_ = 0;
 	std::atomic<bool> domReady_{ false };
+	std::atomic<bool> overlayVisible_{ true };
 	std::atomic<int> nextId_{ 1 };
 
 	mutable std::mutex mtx_;

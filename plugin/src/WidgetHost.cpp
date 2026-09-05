@@ -4,6 +4,7 @@
 #include <cctype>
 #include <cstdio>
 #include <cstring>
+#include <set>
 
 #include <objbase.h>
 #include <shlwapi.h>
@@ -188,6 +189,60 @@ namespace
 	}
 }
 
+namespace
+{
+	// Menus that hide the vanilla HUD (and with it, the Flash widgets this
+	// mod replaces). MessageBoxMenu and the fader/cursor menus deliberately
+	// aren't listed - the HUD stays visible under those.
+	constexpr const char* HIDE_MENUS[] = {
+		"Dialogue Menu", "Console", "InventoryMenu", "MagicMenu", "MapMenu",
+		"StatsMenu", "ContainerMenu", "BarterMenu", "GiftMenu", "Training Menu",
+		"Lockpicking Menu", "Book Menu", "Crafting Menu", "FavoritesMenu",
+		"Journal Menu", "Sleep/Wait Menu", "LevelUp Menu", "Main Menu",
+		"Loading Menu", "RaceSex Menu", "TweenMenu", "Mist Menu"
+	};
+
+	class MenuWatcher final : public RE::BSTEventSink<RE::MenuOpenCloseEvent>
+	{
+	public:
+		static MenuWatcher* GetSingleton()
+		{
+			static MenuWatcher instance;
+			return &instance;
+		}
+
+		RE::BSEventNotifyControl ProcessEvent(const RE::MenuOpenCloseEvent* ev,
+			RE::BSTEventSource<RE::MenuOpenCloseEvent>*) override
+		{
+			if (!ev) {
+				return RE::BSEventNotifyControl::kContinue;
+			}
+			const std::string_view name = ev->menuName.c_str();
+			bool relevant = false;
+			for (const char* m : HIDE_MENUS) {
+				if (name == m) {
+					relevant = true;
+					break;
+				}
+			}
+			if (relevant) {
+				std::scoped_lock lock(mtx_);
+				if (ev->opening) {
+					open_.insert(std::string(name));
+				} else {
+					open_.erase(std::string(name));
+				}
+				WidgetHost::Get().SetOverlayVisible(open_.empty());
+			}
+			return RE::BSEventNotifyControl::kContinue;
+		}
+
+	private:
+		std::mutex mtx_;
+		std::set<std::string> open_;
+	};
+}
+
 WidgetHost& WidgetHost::Get()
 {
 	static WidgetHost instance;
@@ -223,7 +278,28 @@ void WidgetHost::OnDataLoaded()
 		}
 	});
 
+	if (auto* ui = RE::UI::GetSingleton()) {
+		ui->AddEventSink(MenuWatcher::GetSingleton());
+	}
+
 	logger::info("iWant Widgets view created ({})", VIEW_PATH);
+}
+
+void WidgetHost::SetOverlayVisible(bool visible)
+{
+	if (overlayVisible_.exchange(visible) == visible) {
+		return;
+	}
+	SKSE::GetTaskInterface()->AddTask([visible]() {
+		auto& host = WidgetHost::Get();
+		if (host.api_ && host.view_ && host.api_->IsValid(host.view_)) {
+			if (visible) {
+				host.api_->Show(host.view_);
+			} else {
+				host.api_->Hide(host.view_);
+			}
+		}
+	});
 }
 
 bool WidgetHost::IsReady() const
