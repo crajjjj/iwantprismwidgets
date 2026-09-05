@@ -44,11 +44,6 @@ namespace
 		return s;
 	}
 
-	// Extensions the renderer can decode, in preference order when a requested
-	// file is missing. DDS first (the historical default), then lossless, then
-	// animated, then lossy.
-	constexpr const char* ALT_EXTS[] = { ".dds", ".png", ".gif", ".jpg", ".jpeg" };
-
 	// Reads through the game's resource system, so both loose files and BSA
 	// archives resolve. Path is relative to Data\ with backslash separators.
 	bool ReadGameFile(const std::string& relPath, std::vector<std::uint8_t>& out)
@@ -588,74 +583,6 @@ void WidgetHost::Dispatch(const std::string& json)
 	});
 }
 
-// Resolve the file a consumer actually gets. Consumers hardcode `.dds`, but
-// the renderer decodes PNG/JPG/GIF and spritesheets too, so a pack can drop a
-// richer format in beside (or instead of) the `.dds` and it is picked up with
-// no Papyrus change:
-//   1. the exact requested path (an existing .dds still wins - no surprise);
-//   2. the same base name under another supported extension;
-//   3. an animated spritesheet `<base>_<N>f[@ms].<ext>` sitting in the folder.
-// resolvedName carries the winning FILENAME so spritesheet slicing keys off it
-// rather than the requested name.
-bool WidgetHost::ResolveAsset(const std::string& relPath, std::vector<std::uint8_t>& bytes,
-	std::string& resolvedName)
-{
-	// 1. exact request
-	if (ReadGameFile(relPath, bytes)) {
-		resolvedName = relPath;
-		return true;
-	}
-
-	namespace fs = std::filesystem;
-	const fs::path p(relPath);
-	const std::string stem = p.stem().string();
-	const std::string dir = p.parent_path().string();
-
-	// 2. same base, alternate extension
-	for (const char* ext : ALT_EXTS) {
-		const std::string cand = (dir.empty() ? stem : dir + "\\" + stem) + ext;
-		if (_stricmp(cand.c_str(), relPath.c_str()) != 0 && ReadGameFile(cand, bytes)) {
-			resolvedName = cand;
-			return true;
-		}
-	}
-
-	// 3. spritesheet variant `<stem>_<N>f[@ms].<ext>` — loose files only (a dir
-	//    scan can't see BSA contents, but animated packs ship loose).
-	std::error_code ec;
-	const fs::path scanDir = fs::path("Data") / dir;
-	if (fs::is_directory(scanDir, ec)) {
-		const std::string lowStem = ToLower(stem);
-		static const std::regex sheetRe(R"(_\d+f(@\d+)?$)", std::regex::icase);
-		for (const auto& entry : fs::directory_iterator(scanDir, ec)) {
-			if (!entry.is_regular_file(ec)) {
-				continue;
-			}
-			const std::string fstem = ToLower(entry.path().stem().string());
-			std::string fext = ToLower(entry.path().extension().string());
-			bool known = false;
-			for (const char* e : ALT_EXTS) {
-				if (fext == e) {
-					known = true;
-					break;
-				}
-			}
-			if (!known || fstem.rfind(lowStem + "_", 0) != 0) {
-				continue;
-			}
-			if (std::regex_search(fstem.c_str() + lowStem.size(), sheetRe)) {
-				const std::string cand = (dir.empty() ? "" : dir + "\\") +
-					entry.path().filename().string();
-				if (ReadGameFile(cand, bytes)) {
-					resolvedName = cand;
-					return true;
-				}
-			}
-		}
-	}
-	return false;
-}
-
 const WidgetHost::ImageData& WidgetHost::LoadImageFile(const std::string& file)
 {
 	const std::string key = ToLower(file);
@@ -666,40 +593,40 @@ const WidgetHost::ImageData& WidgetHost::LoadImageFile(const std::string& file)
 		}
 	}
 
+	// Format-agnostic: decode whatever the consumer asked for by its actual
+	// extension. Which file/format to request is the CONSUMER's decision
+	// (e.g. SL Widgets), not the renderer's - the DLL never guesses extensions
+	// or scans folders. A `*_<N>f[@ms].<ext>` name is sliced as a spritesheet.
 	ImageData data;
 	const std::string relPath = NormalizePath(file);
+	const std::string ext = ToLower(std::filesystem::path(relPath).extension().string());
 
 	std::vector<std::uint8_t> bytes;
-	std::string resolved;
-	if (!ResolveAsset(relPath, bytes, resolved)) {
-		logger::error("loadWidget: cannot read '{}' (tried alt extensions + spritesheet)",
-			relPath);
-	} else {
-		const std::string ext = ToLower(std::filesystem::path(resolved).extension().string());
-		if (ext == ".dds" || ext == ".png" || ext == ".jpg" || ext == ".jpeg" ||
-			ext == ".gif") {
-			if (ext == ".gif" && DecodeGifFrames(bytes, data)) {
-				// Animated GIF: composited frames carry it from here.
-			} else {
-				std::vector<std::uint8_t> rgba;
-				if (DecodeImageToRGBA(bytes, rgba, data.w, data.h)) {
-					if (!SliceSpritesheet(resolved, rgba, data.w, data.h, data)) {
-						data.px = Base64(rgba.data(), rgba.size());
-					}
-				} else if (ext != ".dds") {
-					// Last resort: hand the encoded file to the view's own loader.
-					const char* mime = (ext == ".png") ? "image/png" :
-									   (ext == ".gif") ? "image/gif" : "image/jpeg";
-					data.url = std::format("data:{};base64,{}", mime,
-						Base64(bytes.data(), bytes.size()));
-				} else {
-					logger::error("loadWidget: decode failed for '{}'", resolved);
-				}
-			}
+	if (!ReadGameFile(relPath, bytes)) {
+		logger::error("loadWidget: cannot read '{}' (loose or BSA)", relPath);
+	} else if (ext == ".dds" || ext == ".png" || ext == ".jpg" || ext == ".jpeg" ||
+			   ext == ".gif") {
+		if (ext == ".gif" && DecodeGifFrames(bytes, data)) {
+			// Animated GIF: composited frames carry it from here.
 		} else {
-			// .swf widgets cannot be rendered outside Scaleform.
-			logger::error("loadWidget: unsupported format '{}' for '{}'", ext, resolved);
+			std::vector<std::uint8_t> rgba;
+			if (DecodeImageToRGBA(bytes, rgba, data.w, data.h)) {
+				if (!SliceSpritesheet(file, rgba, data.w, data.h, data)) {
+					data.px = Base64(rgba.data(), rgba.size());
+				}
+			} else if (ext != ".dds") {
+				// Last resort: hand the encoded file to the view's own loader.
+				const char* mime = (ext == ".png") ? "image/png" :
+								   (ext == ".gif") ? "image/gif" : "image/jpeg";
+				data.url = std::format("data:{};base64,{}", mime,
+					Base64(bytes.data(), bytes.size()));
+			} else {
+				logger::error("loadWidget: decode failed for '{}'", relPath);
+			}
 		}
+	} else {
+		// .swf widgets cannot be rendered outside Scaleform.
+		logger::error("loadWidget: unsupported format '{}' for '{}'", ext, relPath);
 	}
 
 	if (data.px.empty() && data.url.empty() && data.frames.empty()) {
