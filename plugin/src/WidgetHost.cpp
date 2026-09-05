@@ -26,7 +26,11 @@ namespace
 		while (!p.empty() && p.front() == '/') {
 			p.erase(p.begin());
 		}
-		return std::string(ROOT_PREFIX) + p;
+		p = std::string(ROOT_PREFIX) + p;
+		// BSResource wants Windows separators; forward slashes fail to
+		// resolve loose files.
+		std::replace(p.begin(), p.end(), '/', '\\');
+		return p;
 	}
 
 	std::string ToLower(std::string s)
@@ -37,20 +41,30 @@ namespace
 	}
 
 	// Reads through the game's resource system, so both loose files and BSA
-	// archives resolve. Path is relative to Data/.
+	// archives resolve. Path is relative to Data\ with backslash separators.
 	bool ReadGameFile(const std::string& relPath, std::vector<std::uint8_t>& out)
 	{
-		RE::BSResourceNiBinaryStream stream(relPath);
-		if (!stream.good()) {
-			return false;
+		{
+			RE::BSResourceNiBinaryStream stream(relPath);
+			if (stream.good()) {
+				constexpr std::size_t CHUNK = 64 * 1024;
+				std::uint8_t buf[CHUNK];
+				std::size_t got = 0;
+				do {
+					got = stream.read(buf, CHUNK);
+					out.insert(out.end(), buf, buf + got);
+				} while (got == CHUNK);
+				if (!out.empty()) {
+					return true;
+				}
+			}
 		}
-		constexpr std::size_t CHUNK = 64 * 1024;
-		std::uint8_t buf[CHUNK];
-		std::size_t got = 0;
-		do {
-			got = stream.read(buf, CHUNK);
-			out.insert(out.end(), buf, buf + got);
-		} while (got == CHUNK);
+		// Fallback: plain loose-file read relative to the game directory.
+		// Still VFS-aware under MO2 (the hook is process-wide).
+		std::ifstream f("Data\\" + relPath, std::ios::binary);
+		if (f) {
+			out.assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
+		}
 		return !out.empty();
 	}
 
