@@ -8,3 +8,6 @@ plugin/.vs/
 dist/
 *.7z
 *.zip
+
+# IDE
+*.code-workspace
