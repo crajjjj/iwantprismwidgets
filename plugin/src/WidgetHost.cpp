@@ -387,13 +387,16 @@ const WidgetHost::ImageData& WidgetHost::LoadImageFile(const std::string& file)
 	std::vector<std::uint8_t> bytes;
 	if (!ReadGameFile(relPath, bytes)) {
 		logger::error("loadWidget: cannot read '{}' (loose or BSA)", relPath);
-	} else if (ext == ".dds" || ext == ".png" || ext == ".jpg" || ext == ".jpeg") {
+	} else if (ext == ".dds" || ext == ".png" || ext == ".jpg" || ext == ".jpeg" ||
+			   ext == ".gif") {
+		// GIF: first frame only - WIC decodes it like any still image here.
 		std::vector<std::uint8_t> rgba;
 		if (DecodeImageToRGBA(bytes, rgba, data.w, data.h)) {
 			data.px = Base64(rgba.data(), rgba.size());
 		} else if (ext != ".dds") {
 			// Last resort: hand the encoded file to the view's own loader.
-			const char* mime = (ext == ".png") ? "image/png" : "image/jpeg";
+			const char* mime = (ext == ".png") ? "image/png" :
+							   (ext == ".gif") ? "image/gif" : "image/jpeg";
 			data.url = std::format("data:{};base64,{}", mime, Base64(bytes.data(), bytes.size()));
 		} else {
 			logger::error("loadWidget: decode failed for '{}'", relPath);
