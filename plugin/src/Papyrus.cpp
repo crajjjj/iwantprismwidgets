@@ -21,6 +21,7 @@ namespace
 		const auto& img = host.LoadImageFile(file);
 		const int id = host.NextId();
 		host.SetMetrics(id, img.w, img.h);
+		logger::info("DIAG loadWidget: id={} file={}", id, file);
 		Json::Obj o;
 		o.Str("op", "loadWidget").Int("id", id);
 		if (!img.frames.empty()) {
@@ -101,6 +102,11 @@ namespace
 
 	void SetPos(Tag*, std::int32_t id, std::int32_t x, std::int32_t y)
 	{
+		// DIAG: moving a widget off-stage is how _moveIconOffscreen hides an
+		// icon whose _findBarOfIcon returned -1. Log it to catch vanishings.
+		if (x >= 9000 || y >= 9000) {
+			logger::info("DIAG offscreen: setPos id={} -> {},{}", id, x, y);
+		}
 		WidgetHost::Get().Send(
 			Json::Obj().Str("op", "setPos").Int("id", id).Int("x", x).Int("y", y).Build());
 	}
@@ -130,6 +136,9 @@ namespace
 
 	void SetVisible(Tag*, std::int32_t id, std::int32_t visible)
 	{
+		if (visible == 0) {
+			logger::info("DIAG hide: setVisible id={} -> false", id);
+		}
 		WidgetHost::Get().Send(
 			Json::Obj().Str("op", "setVisible").Int("id", id).Boolean("vis", visible != 0).Build());
 	}
@@ -171,6 +180,7 @@ namespace
 
 	void Destroy(Tag*, std::int32_t id)
 	{
+		logger::info("DIAG destroy: id={}", id);
 		WidgetHost::Get().EraseMetrics(id);
 		WidgetHost::Get().Send(Json::Obj().Str("op", "destroy").Int("id", id).Build());
 	}
