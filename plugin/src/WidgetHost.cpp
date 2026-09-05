@@ -3,9 +3,14 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
+#include <cstring>
 
-#include <DirectXTex.h>
 #include <objbase.h>
+#include <shlwapi.h>
+#include <wincodec.h>
+#include <wrl/client.h>
+
+using Microsoft::WRL::ComPtr;
 
 namespace
 {
@@ -80,8 +85,8 @@ namespace
 
 	void EnsureCom()
 	{
-		// WIC (used by DirectXTex for PNG encode) needs COM on the calling
-		// thread; natives arrive on arbitrary Papyrus VM threads.
+		// WIC needs COM on the calling thread; natives arrive on arbitrary
+		// Papyrus VM threads.
 		thread_local bool initialized = [] {
 			CoInitializeEx(nullptr, COINIT_MULTITHREADED);
 			return true;
@@ -89,49 +94,98 @@ namespace
 		(void)initialized;
 	}
 
+	bool EncodePNG(IWICImagingFactory* factory, IWICBitmapSource* src,
+		std::vector<std::uint8_t>& png)
+	{
+		ComPtr<IStream> out;
+		if (FAILED(CreateStreamOnHGlobal(nullptr, TRUE, &out))) {
+			return false;
+		}
+
+		ComPtr<IWICBitmapEncoder> encoder;
+		ComPtr<IWICBitmapFrameEncode> frame;
+		if (FAILED(factory->CreateEncoder(GUID_ContainerFormatPng, nullptr, &encoder)) ||
+			FAILED(encoder->Initialize(out.Get(), WICBitmapEncoderNoCache)) ||
+			FAILED(encoder->CreateNewFrame(&frame, nullptr)) ||
+			FAILED(frame->Initialize(nullptr)) ||
+			FAILED(frame->WriteSource(src, nullptr)) ||
+			FAILED(frame->Commit()) ||
+			FAILED(encoder->Commit())) {
+			return false;
+		}
+
+		HGLOBAL hg = nullptr;
+		if (FAILED(GetHGlobalFromStream(out.Get(), &hg))) {
+			return false;
+		}
+		const auto size = GlobalSize(hg);
+		const auto* p = static_cast<const std::uint8_t*>(GlobalLock(hg));
+		if (!p) {
+			return false;
+		}
+		png.assign(p, p + size);
+		GlobalUnlock(hg);
+		return true;
+	}
+
+	// Decode DDS via Windows' built-in WIC DDS codec (covers DXT1/3/5 and
+	// DX10-header formats), with a manual fallback for legacy uncompressed
+	// 32bpp DDS files the codec rejects. Re-encodes to PNG for the view.
 	bool DecodeDDSToPNG(const std::vector<std::uint8_t>& dds, std::vector<std::uint8_t>& png,
 		int& w, int& h)
 	{
 		EnsureCom();
 
-		DirectX::TexMetadata meta{};
-		DirectX::ScratchImage image;
-		if (FAILED(DirectX::LoadFromDDSMemory(dds.data(), dds.size(),
-				DirectX::DDS_FLAGS_NONE, &meta, image))) {
+		ComPtr<IWICImagingFactory> factory;
+		if (FAILED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
+				IID_PPV_ARGS(&factory)))) {
 			return false;
 		}
 
-		DirectX::ScratchImage converted;
-		const DirectX::Image* src = image.GetImage(0, 0, 0);
-		if (!src) {
-			return false;
-		}
-
-		if (DirectX::IsCompressed(meta.format)) {
-			if (FAILED(DirectX::Decompress(*src, DXGI_FORMAT_R8G8B8A8_UNORM, converted))) {
-				return false;
+		ComPtr<IStream> in(SHCreateMemStream(dds.data(), static_cast<UINT>(dds.size())));
+		ComPtr<IWICBitmapDecoder> decoder;
+		if (in && SUCCEEDED(factory->CreateDecoderFromStream(in.Get(), nullptr,
+						WICDecodeMetadataCacheOnDemand, &decoder))) {
+			ComPtr<IWICBitmapFrameDecode> frame;
+			ComPtr<IWICBitmapSource> converted;
+			UINT uw = 0, uh = 0;
+			if (SUCCEEDED(decoder->GetFrame(0, &frame)) &&
+				SUCCEEDED(frame->GetSize(&uw, &uh)) &&
+				SUCCEEDED(WICConvertBitmapSource(GUID_WICPixelFormat32bppBGRA, frame.Get(),
+					&converted)) &&
+				EncodePNG(factory.Get(), converted.Get(), png)) {
+				w = static_cast<int>(uw);
+				h = static_cast<int>(uh);
+				return true;
 			}
-			src = converted.GetImage(0, 0, 0);
-		} else if (meta.format != DXGI_FORMAT_R8G8B8A8_UNORM &&
-				   meta.format != DXGI_FORMAT_B8G8R8A8_UNORM) {
-			if (FAILED(DirectX::Convert(*src, DXGI_FORMAT_R8G8B8A8_UNORM,
-					DirectX::TEX_FILTER_DEFAULT, DirectX::TEX_THRESHOLD_DEFAULT, converted))) {
-				return false;
+		}
+
+		// Legacy uncompressed 32bpp DDS: 4-byte magic + 124-byte header, then
+		// raw pixel data. Header fields: height @12, width @16, pixel format
+		// flags @80 (0x40 = uncompressed RGB), bit count @88.
+		if (dds.size() > 128 && std::memcmp(dds.data(), "DDS ", 4) == 0) {
+			const auto u32 = [&](std::size_t off) {
+				std::uint32_t v;
+				std::memcpy(&v, dds.data() + off, 4);
+				return v;
+			};
+			const std::uint32_t height = u32(12), width = u32(16);
+			const std::uint32_t pfFlags = u32(80), bitCount = u32(88);
+			if ((pfFlags & 0x40) != 0 && bitCount == 32 &&
+				dds.size() >= 128 + static_cast<std::size_t>(width) * height * 4) {
+				ComPtr<IWICBitmap> bmp;
+				if (SUCCEEDED(factory->CreateBitmapFromMemory(width, height,
+						GUID_WICPixelFormat32bppBGRA, width * 4, width * height * 4,
+						const_cast<BYTE*>(dds.data() + 128), &bmp)) &&
+					EncodePNG(factory.Get(), bmp.Get(), png)) {
+					w = static_cast<int>(width);
+					h = static_cast<int>(height);
+					return true;
+				}
 			}
-			src = converted.GetImage(0, 0, 0);
 		}
 
-		DirectX::Blob blob;
-		if (FAILED(DirectX::SaveToWICMemory(*src, DirectX::WIC_FLAGS_NONE,
-				DirectX::GetWICCodec(DirectX::WIC_CODEC_PNG), blob))) {
-			return false;
-		}
-
-		const auto* p = static_cast<const std::uint8_t*>(blob.GetBufferPointer());
-		png.assign(p, p + blob.GetBufferSize());
-		w = static_cast<int>(src->width);
-		h = static_cast<int>(src->height);
-		return true;
+		return false;
 	}
 }
 
@@ -165,7 +219,7 @@ void WidgetHost::OnDataLoaded()
 
 	api_->RegisterJSListener(view_, "iwMetrics", [](const char* arg) {
 		int id = 0, w = 0, h = 0;
-		if (arg && std::sscanf(arg, R"({"id":%d,"w":%d,"h":%d})", &id, &w, &h) == 3) {
+		if (arg && sscanf_s(arg, R"({"id":%d,"w":%d,"h":%d})", &id, &w, &h) == 3) {
 			WidgetHost::Get().SetMetrics(id, w, h);
 		}
 	});

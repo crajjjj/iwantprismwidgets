@@ -9,8 +9,10 @@ runtime by catching the `iWantWidgetsReset` mod event and casting its sender to
 the `iWant_Widgets` script type — no plugin master, no FormID binding — so a
 same-named script backed by natives slots straight in.
 
-> **Status: scaffold — compiles-on-paper, not yet built or tested in game.**
-> See *First build & smoke test* below.
+> **Status: builds clean, not yet tested in game.** The DLL compiles
+> (VS2022/xmake), all three scripts compile against real SKSE sources, and the
+> ESP + SEQ are authored (via houseCARL — no CK session needed). What remains
+> is the in-game smoke test below.
 
 ## Why
 
@@ -85,16 +87,13 @@ Compile the three `.psc` with the standard SkyrimSE compiler. Required import
 sources: vanilla scripts + SKSE scripts (`UI.psc`, `Utility.psc`). **SkyUI
 sources are NOT needed** (that's the point).
 
-### The plugin (.esp) — one-time CK step
+### The plugin (.esp)
 
-1. Create a new plugin, e.g. `iWant Widgets Prisma.esp` (ESL-flag is fine).
-2. New Quest, ID `iWantPrismaWidgetQuest`:
-   - *Start Game Enabled* ✓, *Run Once* ✗
-   - Scripts tab → attach `iwant_widgets` (no properties to fill)
-3. Quest Aliases tab → new **Reference Alias** `PlayerAlias`:
-   - Forced Reference → `PlayerRef`
-   - attach script `iwant_widgets_prisma_alias`
-4. Save.
+`iWant Widgets Prisma.esp` ships in the repo root (authored with houseCARL, no
+CK needed): quest `iWantPrismaWidgetQuest` (Start Game Enabled) carrying the
+`iwant_widgets` script, plus a PlayerRef-forced `PlayerAlias` carrying
+`iwant_widgets_prisma_alias`. `SEQ/iWant Widgets Prisma.seq` accompanies it —
+without the SEQ a start-game-enabled quest in an .esp silently never starts.
 
 Any plugin filename works — verified: `iWant Status Bars.esp` has **no
 masters** and no reference to the original `iWant Widgets.esl`.
@@ -104,18 +103,19 @@ masters** and no reference to the original `iWant Widgets.esl`.
 ```
 Data/
 ├── iWant Widgets Prisma.esp
-├── Scripts/iwant_widgets.pex               ← overwrites the original's script
+├── SEQ/iWant Widgets Prisma.seq
+├── Scripts/iwant_widgets.pex               ← overrides the original's script
 ├── Scripts/iWantWidgetsNative.pex
 ├── Scripts/iwant_widgets_prisma_alias.pex
 ├── SKSE/Plugins/iWantWidgetsPrisma.dll
 ├── PrismaUI/views/iwantwidgets/index.html
-└── Interface/exported/widgets/iwant/widgets/library/*.dds   ← keep from original
+└── Interface/exported/widgets/iwant/widgets/library/*.dds   ← bundled (MIT)
 ```
 
-- **Remove/disable** the original iWant Widgets ESL + `iWantWidgets.swf` +
-  `iwant_widgets.pex` (this mod must win any conflict on `iwant_widgets.pex`).
-  Keep its `Interface/exported/.../library` DDS files (or repack them here —
-  they are MIT).
+- **Disable** the original iWant Widgets mod (its ESL, `iWantWidgets.swf`, and
+  `iwant_widgets.pex`); the library DDS icons are bundled here, so nothing
+  from it is needed. If you keep it enabled instead, this mod must win the
+  `iwant_widgets.pex` conflict.
 - **Keep** iWant Status Bars installed and untouched.
 - Requires: SKSE, Address Library, [PrismaUI](https://www.nexusmods.com/skyrimspecialedition/mods/148718)
   (+ its Media Keys Fix requirement).

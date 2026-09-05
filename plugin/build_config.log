@@ -1,0 +1,5 @@
+[0mchecking for Microsoft C/C++ Compiler (x64) ... [38;5;2;1mok[0m
+[0mchecking for Microsoft Visual Studio (x64) version ... [38;5;2;1m2022[0m
+[0mgenerating C:\Playground\Skyrim\mods\iWantWidgetsPrisma\plugin\lib\commonlibsse-ng\res\commonlibsse-ng-plugin.cpp.in ... [38;5;2;1mok[0m
+[0mgenerating C:\Playground\Skyrim\mods\iWantWidgetsPrisma\plugin\lib\commonlibsse-ng\res\commonlib-plugin.rc.in ... [38;5;2;1mok[0m
+[0m[1;38;5;3;1mwarning: [38;5;3;1m`xmake f --buildir=` has been deprecated, please use `xmake f -o/--builddir=`[0m

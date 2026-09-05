@@ -15,8 +15,6 @@ set_policy("package.requires_lock", true)
 add_rules("mode.release")
 add_rules("plugin.vsxmake.autoupdate")
 
-add_requires("directxtex")
-
 target("iWantWidgetsPrisma")
     add_deps("commonlibsse-ng")
 
@@ -26,8 +24,9 @@ target("iWantWidgetsPrisma")
         description = "iWant Widgets reimplemented on PrismaUI (drop-in for the Flash/Scaleform original)"
     })
 
-    add_packages("directxtex")
-    add_syslinks("ole32")
+    -- Image decode/encode uses Windows' built-in WIC (DDS + PNG codecs),
+    -- so no third-party image library is required.
+    add_syslinks("ole32", "shlwapi", "windowscodecs")
 
     add_files("src/**.cpp")
     add_headerfiles("src/**.h")
