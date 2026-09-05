@@ -64,6 +64,12 @@ private:
 
 	void Dispatch(const std::string& json);  // task-queued InteropCall
 
+	// Find the actual asset for a requested path: exact, then alternate
+	// extension, then a `<base>_<N>f` spritesheet in the folder. Fills bytes +
+	// the winning filename (which drives spritesheet slicing). See the .cpp.
+	bool ResolveAsset(const std::string& relPath, std::vector<std::uint8_t>& bytes,
+		std::string& resolvedName);
+
 	void ApplyVisibility();
 
 	PRISMA_UI_API::IVPrismaUI1* api_ = nullptr;

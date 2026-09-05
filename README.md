@@ -161,8 +161,16 @@ Data/
   reported back asynchronously — a call in the same Papyrus instant as
   `loadText`/`setText` may read 0. (DDS widgets report instantly from the
   decoder; Status Bars never calls these.)
+- **Formats & base-name resolution.** Consumers hardcode `.dds`, but the
+  renderer decodes DDS/PNG/JPG/GIF (incl. animated) and spritesheets. When the
+  exact requested file is missing, the DLL resolves the same base name to (a)
+  another supported extension, then (b) a `<base>_<N>f[@ms].<ext>` spritesheet
+  in the folder. So an icon pack drops a `aroused3.png`, `aroused3.gif`, or
+  `aroused3_8f.png` beside where `aroused3.dds` was expected and it renders —
+  **no change to SL Widgets or any consumer**. An existing exact `.dds` still
+  wins (no surprise); the fallback only fires when it's absent. Spritesheet
+  auto-detection is loose-files-only (a dir scan can't see BSA contents).
 - `loadWidget` with a `.swf` path cannot render (logged, becomes invisible).
-  DDS/PNG/JPG all work, from loose files or BSAs.
 - Shape draws treat a nonexistent widget id as skippable even when
   `skipInvisible = False`; the Flash original consumed an angle/offset step in
   one sub-case. No known consumer hits this (Status Bars hard-codes
