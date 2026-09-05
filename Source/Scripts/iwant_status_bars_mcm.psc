@@ -839,6 +839,12 @@ Function _saveIcon(Int icon, FISSInterface fiss)
 EndFunction
 
 Function _loadIcon(Int icon, FISSInterface fiss)
+	; Prisma Edition patch: released slots keep the "No Icon - No Icon"
+	; placeholder label; skip them instead of restoring saved colors onto
+	; the blank icon.
+	If iBars.iconLabel[icon] == "No Icon - No Icon"
+		return
+	EndIf
 	String baseName = "Icon" + DELIMITER + iBars._getIconSourceModName(icon) + DELIMITER + iBars._getIconFriendlyName(icon) + DELIMITER
 	String extendedBaseName
 	Int s = 0
