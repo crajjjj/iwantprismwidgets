@@ -42,21 +42,27 @@ Function _startReset()
 	Int myGen = _resetGen
 	_consumerReady = False
 
-	; Inter-fire gaps (seconds). Front-loaded: most races resolve in the first
-	; few seconds; the long tail covers a consumer whose quest inits very late.
-	Float[] gaps = new Float[7]
-	gaps[0] = 0.5
-	gaps[1] = 1.5
-	gaps[2] = 2.0
-	gaps[3] = 3.0
-	gaps[4] = 4.0
-	gaps[5] = 6.0
-	gaps[6] = 8.0
+	; Each triggerReset WIPES the view and every consumer reloads all its icons
+	; -- so fire as FEW times as possible. Firing again before a reload has
+	; finished wipes it mid-flight, leaving icons un-sized (big), un-tinted
+	; (white) or un-painted (empty), and the churn reads as flicker. So: fire
+	; once after consumers have had time to register, then wait LONG enough for
+	; the reload to complete and ack before even considering a single retry.
+	; Two fires max -- the retry is only the safety net for a consumer whose
+	; quest inits unusually late (the init-race this whole dance exists for).
+	Float[] gaps = new Float[2]
+	gaps[0] = 2.5    ; initial: let consumers register their reset handler
+	gaps[1] = 8.0    ; lone retry, only if nobody has acked by then
 
 	Int i = 0
 	While i < gaps.Length
 		Utility.Wait(gaps[i])
 		If _resetGen != myGen
+			Return
+		EndIf
+		; If a consumer already finished loading (its own reload, or a prior
+		; fire), no reset is needed at all -- don't wipe a good state.
+		If _consumerReady
 			Return
 		EndIf
 
@@ -65,10 +71,10 @@ Function _startReset()
 			w.triggerReset()
 		EndIf
 
-		; Give the consumer a beat to catch the event, reload, and ack before
-		; deciding whether another retry is needed -- avoids re-wiping the view
-		; (a visible flicker) once someone has successfully loaded.
-		Utility.Wait(1.0)
+		; Wait long enough for the consumer's full reload (many loadWidget calls
+		; with internal waits) to finish and send its ack, so the next retry
+		; never overlaps an in-flight reload.
+		Utility.Wait(5.0)
 		If _resetGen != myGen || _consumerReady
 			Return
 		EndIf
