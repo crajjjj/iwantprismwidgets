@@ -91,8 +91,10 @@ fixes live in one package):
   ("No Icon - No Icon") slots.
 - **API additions** for dependent mods: `_getBarVisible(bar)` and
   `_getBarLastChangeTime(bar)` (with per-bar change timestamps), used e.g. by
-  SL Widgets to hide its NPC name labels while an autohide bar is faded out.
-  SL Widgets 2.2.4+ relies on this fork being present.
+  SL Widgets to hide its NPC name labels while an autohide bar is faded out;
+  `_getPatchVersion()` (returns 1) so dependents can probe for the fork —
+  SL Widgets 2.2.4+ probes it once and disables its NPC-tracking layer when
+  the fork is absent (player tracking works on stock Status Bars).
 
 ## Building
 

@@ -212,6 +212,14 @@ Bool Function _getBarHoldToShow(Int bar)
 	Return(statusBarHoldToShow[bar])
 EndFunction
 
+; Prisma Edition patch: lets dependent mods detect this fork at runtime.
+; On stock Status Bars the call fails into a single Papyrus log error and
+; returns 0, so callers probe once, cache the result, and skip the
+; patched-only accessors below when the fork is absent.
+Int Function _getPatchVersion()
+	Return 1
+EndFunction
+
 ; Prisma Edition patch: exposes current bar visibility so dependent mods can
 ; mirror it on their own widgets (e.g. NPC name labels that float above
 ; the bar should hide when the user toggles the bar off via hotkey).
