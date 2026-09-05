@@ -107,8 +107,10 @@ Game Enabled) with the `iwant_widgets` script plus a PlayerRef-forced
 accompanies it — without the SEQ a start-game-enabled quest never starts.
 
 Because the filename matches, install this mod at **higher priority than the
-original iWant Widgets** (or disable the original outright — this plugin is
-self-contained). Consumers still bind by the `iWant_Widgets` script type via the
+original iWant Widgets**, which stays installed to supply its DDS icon assets
+(this mod ships no icons). Our higher-priority `iWant Widgets.esl` +
+`iwant_widgets.pex` override the original's plugin and script while its loose
+assets still deploy. Consumers bind by the `iWant_Widgets` script type via the
 `iWantWidgetsReset` event, so nothing depends on the plugin's FormIDs.
 
 ## Install layout (users)
@@ -121,14 +123,18 @@ Data/
 ├── Scripts/iWantWidgetsNative.pex
 ├── Scripts/iwant_widgets_prisma_alias.pex
 ├── SKSE/Plugins/iWantWidgetsPrisma.dll
-├── PrismaUI/views/iwantwidgets/index.html
-└── Interface/exported/widgets/iwant/widgets/library/*.dds   ← bundled (MIT)
+└── PrismaUI/views/iwantwidgets/index.html
 ```
 
-- Install **at higher priority than the original iWant Widgets** so this mod's
-  `iWant Widgets.esl` + scripts win the file conflict — or disable the original
-  entirely (this mod is self-contained: it bundles the plugin, scripts, DLL,
-  view, and the MIT library icons).
+- Icon DDS are **not bundled** — they stay in their source mods: the original
+  iWant Widgets provides its generic `.../library/*.dds` set, and each Status
+  Bars addon (SL Widgets, packs) ships its own icons under the same
+  `widgets/iwant/widgets/library/` tree. This mod is code/plugin/view only.
+- **Keep the original iWant Widgets mod installed and enabled** (left pane) so
+  its loose DDS deploy; this mod, at **higher priority**, overrides its
+  `iWant Widgets.esl` + `iwant_widgets.pex` while leaving its assets in place.
+  (SL Widgets' own icons live in the SL Widgets mods, so SL Widgets renders
+  even if the original iWant Widgets library icons are absent.)
 - **Keep** iWant Status Bars installed and untouched.
 - Requires: SKSE, Address Library, [PrismaUI](https://www.nexusmods.com/skyrimspecialedition/mods/148718)
   (+ its Media Keys Fix requirement).
