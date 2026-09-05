@@ -266,46 +266,24 @@ const ATTRS = {
   }
 };
 
-function nowMs() { return (typeof performance !== 'undefined' ? performance.now() : Date.now()); }
-
 function killTween(key) {
   const t = tweens.get(key);
-  if (t) { clearInterval(t.interval); clearTimeout(t.guard); clearTimeout(t.delay); tweens.delete(key); }
+  if (t) { clearTimeout(t.delay); tweens.delete(key); }
 }
 
-// Timer-driven, NOT requestAnimationFrame: Ultralight throttles/pauses rAF for
-// an unfocused overlay, which would strand a fade partway (an icon left near
-// the setTransparency(1) value looks gone). setInterval keeps ticking, and a
-// setTimeout guarantees the final value even if the interval is coarse/paused —
-// so a widget always REACHES its target alpha and never sticks invisible.
+// SNAP to the target, no animation. The Flash original's fades were cosmetic,
+// but animating alpha here proved fragile: Ultralight doesn't tick setInterval
+// in the unfocused overlay (setTimeout does), and the consumers' reload churn
+// re-runs setTransparency(1) faster than any fade completes — leaving icons
+// stranded at ~1% opacity (positioned, visible, sized, yet invisible). Setting
+// the final value immediately makes visibility deterministic and churn-proof.
 function doTransition(id, target, seconds, attr, easeClass, easeMethod) {
   const w = widgets.get(id);
   const spec = ATTRS[attr];
   if (!w || !spec) return;
-  const key = id + ':' + attr;
-  killTween(key);
-  const easeFns = EASE[easeClass] || EASE.none;
-  const ease = easeFns[easeMethod] || (t => t);
-  const from = spec.get(w);
-  const apply = () => { if (attr !== 'percent') applyAll(w); };
-  if (seconds <= 0) { spec.set(w, target); apply(); return; }
-  const dur = seconds * 1000;
-  const t0 = nowMs();
-  const handle = { interval: 0, guard: 0, delay: 0 };
-  tweens.set(key, handle);
-  const finish = () => {
-    if (tweens.get(key) !== handle) return;
-    spec.set(w, target); apply();
-    clearInterval(handle.interval); clearTimeout(handle.guard);
-    tweens.delete(key);
-  };
-  handle.interval = setInterval(() => {
-    if (tweens.get(key) !== handle) { clearInterval(handle.interval); return; }
-    const p = Math.min(1, (nowMs() - t0) / dur);
-    spec.set(w, from + (target - from) * ease(p)); apply();
-    if (p >= 1) finish();
-  }, 33);
-  handle.guard = setTimeout(finish, dur + 250);
+  killTween(id + ':' + attr);
+  spec.set(w, target);
+  if (attr !== 'percent') applyAll(w);
 }
 
 /* ---------- meters ---------- */
@@ -335,7 +313,7 @@ function cssRGB(v) {
 const OPS = {
   reset(a) {
     lowestWidget = a.nextId;
-    tweens.forEach((t) => { clearInterval(t.interval); clearTimeout(t.guard); clearTimeout(t.delay); });
+    tweens.forEach((t) => { clearTimeout(t.delay); });
     tweens.clear();
     widgets.forEach(w => { clearTimeout(w.animTimer); w.el.remove(); });
     widgets.clear();
@@ -475,6 +453,21 @@ const OPS = {
     w.tint = cssRGB(a.rgb);
     w.tintRGB = [(a.rgb >> 16) & 255, (a.rgb >> 8) & 255, a.rgb & 255];
     applyTint(w);
+    // DIAG: setRGB marks the newly-active state; if that widget is still
+    // hidden shortly after, report why (off-stage / alpha / visible / sized).
+    setTimeout(() => {
+      const v = widgets.get(a.id);
+      if (!v) { console.log('IWDIAG id=' + a.id + ' GONE-from-map'); return; }
+      const onStage = v.x > -50 && v.x < 1330 && v.y > -50 && v.y < 770;
+      const shown = v.visible && v.sized && v.alpha > 2;
+      if (!onStage || !shown) {
+        const m = 'id=' + a.id + ' HIDDEN x=' + Math.round(v.x) +
+          ' y=' + Math.round(v.y) + ' a=' + Math.round(v.alpha) +
+          ' vis=' + v.visible + ' sized=' + v.sized + ' z=' + v.z +
+          ' type=' + v.type;
+        if (typeof window.iwDiag === 'function') window.iwDiag(m); else console.log('IWDIAG ' + m);
+      }
+    }, 300);
   },
 
   toBack(a) {
@@ -542,7 +535,7 @@ const OPS = {
     if (a.delay > 0) {
       const key = a.id + ':' + a.attr;
       killTween(key);
-      const handle = { interval: 0, guard: 0, delay: 0 };
+      const handle = { delay: 0 };
       handle.delay = setTimeout(() => {
         tweens.delete(key);
         doTransition(a.id, a.target, a.seconds, a.attr, a.easeClass, a.easeMethod);
