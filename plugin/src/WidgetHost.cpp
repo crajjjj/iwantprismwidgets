@@ -267,7 +267,10 @@ namespace
 	bool SliceSpritesheet(const std::string& file, const std::vector<std::uint8_t>& rgba,
 		int w, int h, WidgetHost::ImageData& data)
 	{
-		static const std::regex animRe(R"(_(\d+)f(?:@(\d+))?\.[^.\\/]+$)",
+		// Digit counts are bounded so std::stoi cannot throw out_of_range on a
+		// pathological filename (an uncaught throw here would crash the game).
+		// Frame counts beyond 3 digits exceed MAX_ANIM_FRAMES anyway.
+		static const std::regex animRe(R"(_(\d{1,3})f(?:@(\d{1,5}))?\.[^.\\/]+$)",
 			std::regex::icase);
 		std::smatch m;
 		if (!std::regex_search(file, m, animRe)) {
@@ -391,10 +394,11 @@ namespace
 namespace
 {
 	// Menus that hide the vanilla HUD (and with it, the Flash widgets this
-	// mod replaces). MessageBoxMenu and the fader/cursor menus deliberately
-	// aren't listed - the HUD stays visible under those.
+	// mod replaces). MessageBoxMenu, the fader/cursor menus, and Console
+	// deliberately aren't listed - the HUD stays visible under those (the
+	// Flash original kept rendering with the console open).
 	constexpr const char* HIDE_MENUS[] = {
-		"Dialogue Menu", "Console", "InventoryMenu", "MagicMenu", "MapMenu",
+		"Dialogue Menu", "InventoryMenu", "MagicMenu", "MapMenu",
 		"StatsMenu", "ContainerMenu", "BarterMenu", "GiftMenu", "Training Menu",
 		"Lockpicking Menu", "Book Menu", "Crafting Menu", "FavoritesMenu",
 		"Journal Menu", "Sleep/Wait Menu", "LevelUp Menu", "Main Menu",
@@ -459,14 +463,24 @@ void WidgetHost::OnDataLoaded()
 	view_ = api_->CreateView(VIEW_PATH, [](PrismaView) {
 		auto& host = WidgetHost::Get();
 		logger::info("iWant Widgets view DOM ready");
-		std::vector<std::string> backlog;
-		{
-			std::scoped_lock lock(host.mtx_);
-			host.domReady_ = true;
-			backlog.swap(host.pending_);
-		}
-		for (auto& json : backlog) {
-			host.Dispatch(json);
+		// Flip domReady_ only once the queue is observed empty under the
+		// lock. A Send racing this drain still lands in pending_ (ready is
+		// false) and is picked up by the next pass - nothing can dispatch
+		// ahead of ops queued before it, so op order is preserved across
+		// the ready transition.
+		for (;;) {
+			std::vector<std::string> backlog;
+			{
+				std::scoped_lock lock(host.mtx_);
+				if (host.pending_.empty()) {
+					host.domReady_ = true;
+					break;
+				}
+				backlog.swap(host.pending_);
+			}
+			for (auto& json : backlog) {
+				host.Dispatch(json);
+			}
 		}
 	});
 
@@ -482,15 +496,21 @@ void WidgetHost::OnDataLoaded()
 	}
 
 	// There is no event for the global menus-shown flag (`tm`, and native
-	// HUD-hiders like SexLab's Hide HUD flip it directly), so poll it.
-	std::thread([]() {
-		for (;;) {
+	// HUD-hiders like SexLab's Hide HUD flip it directly), so poll it. The
+	// stop token keeps the thread from touching engine singletons during
+	// teardown: the jthread joins when the host is destroyed, waiting at
+	// most one poll interval.
+	hudPoll_ = std::jthread([](std::stop_token st) {
+		while (!st.stop_requested()) {
 			std::this_thread::sleep_for(std::chrono::milliseconds(250));
+			if (st.stop_requested()) {
+				break;
+			}
 			if (auto* ui = RE::UI::GetSingleton()) {
 				WidgetHost::Get().SetGameHudShown(ui->IsShowingMenus());
 			}
 		}
-	}).detach();
+	});
 
 	logger::info("iWant Widgets view created ({})", VIEW_PATH);
 }
@@ -709,6 +729,18 @@ std::pair<int, int> WidgetHost::GetMetrics(int id) const
 	return { 0, 0 };
 }
 
+void WidgetHost::EraseMetrics(int id)
+{
+	std::scoped_lock lock(mtx_);
+	metrics_.erase(id);
+}
+
+void WidgetHost::ClearAllMetrics()
+{
+	std::scoped_lock lock(mtx_);
+	metrics_.clear();
+}
+
 namespace Json
 {
 	std::string Escape(std::string_view s)
@@ -802,5 +834,71 @@ namespace Json
 	std::string Obj::Build()
 	{
 		return "{" + body_ + "}";
+	}
+}
+
+namespace Text
+{
+	namespace
+	{
+		// Structural validity only (lead/continuation byte shapes) - enough to
+		// distinguish UTF-8 from single-byte ANSI text, where any byte >= 0x80
+		// is a lone lead byte with no continuation.
+		bool IsValidUtf8(std::string_view s)
+		{
+			std::size_t i = 0;
+			while (i < s.size()) {
+				const auto c = static_cast<unsigned char>(s[i]);
+				std::size_t len;
+				if (c < 0x80) {
+					len = 1;
+				} else if ((c & 0xE0) == 0xC0) {
+					len = 2;
+				} else if ((c & 0xF0) == 0xE0) {
+					len = 3;
+				} else if ((c & 0xF8) == 0xF0) {
+					len = 4;
+				} else {
+					return false;
+				}
+				if (i + len > s.size()) {
+					return false;
+				}
+				for (std::size_t j = 1; j < len; ++j) {
+					if ((static_cast<unsigned char>(s[i + j]) & 0xC0) != 0x80) {
+						return false;
+					}
+				}
+				i += len;
+			}
+			return true;
+		}
+	}
+
+	std::string ToUtf8(std::string s)
+	{
+		if (s.empty() || IsValidUtf8(s)) {
+			return s;
+		}
+		// CP_ACP is a best-effort guess (right for text matching the system
+		// locale, e.g. cp1251 strings on a Russian system); on a wrong guess
+		// the result is still valid UTF-8 rather than replacement glyphs.
+		const int wlen = MultiByteToWideChar(CP_ACP, 0, s.data(),
+			static_cast<int>(s.size()), nullptr, 0);
+		if (wlen <= 0) {
+			return s;
+		}
+		std::wstring wide(static_cast<std::size_t>(wlen), L'\0');
+		MultiByteToWideChar(CP_ACP, 0, s.data(), static_cast<int>(s.size()),
+			wide.data(), wlen);
+		const int ulen = WideCharToMultiByte(CP_UTF8, 0, wide.data(), wlen,
+			nullptr, 0, nullptr, nullptr);
+		if (ulen <= 0) {
+			return s;
+		}
+		std::string out(static_cast<std::size_t>(ulen), '\0');
+		WideCharToMultiByte(CP_UTF8, 0, wide.data(), wlen, out.data(), ulen,
+			nullptr, nullptr);
+		return out;
 	}
 }

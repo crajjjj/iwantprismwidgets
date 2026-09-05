@@ -58,6 +58,8 @@ public:
 
 	void SetMetrics(int id, int w, int h);
 	std::pair<int, int> GetMetrics(int id) const;
+	void EraseMetrics(int id);
+	void ClearAllMetrics();
 
 private:
 	WidgetHost() = default;
@@ -84,7 +86,18 @@ private:
 	std::vector<std::string> pending_;
 	std::unordered_map<int, std::pair<int, int>> metrics_;
 	std::unordered_map<std::string, ImageData> imageCache_;
+	// Must stay the last member: it is destroyed (stop requested + joined)
+	// first, so the poll thread can never observe half-destroyed state.
+	std::jthread hudPoll_;
 };
+
+namespace Text
+{
+	// Papyrus hands over raw game-encoding bytes (Windows-1252/1251 in
+	// localized games); Ultralight expects UTF-8. Valid UTF-8 passes through
+	// untouched, anything else is converted from the system ANSI codepage.
+	std::string ToUtf8(std::string s);
+}
 
 namespace Json
 {

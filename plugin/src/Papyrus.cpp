@@ -56,8 +56,8 @@ namespace
 		host.Send(Json::Obj()
 				.Str("op", "loadText")
 				.Int("id", id)
-				.Str("text", text)
-				.Str("font", font)
+				.Str("text", Text::ToUtf8(std::move(text)))
+				.Str("font", Text::ToUtf8(std::move(font)))
 				.Int("size", size)
 				.Int("x", x)
 				.Int("y", y)
@@ -83,14 +83,20 @@ namespace
 
 	void SetText(Tag*, std::int32_t id, std::string text)
 	{
-		WidgetHost::Get().Send(
-			Json::Obj().Str("op", "setText").Int("id", id).Str("text", text).Build());
+		WidgetHost::Get().Send(Json::Obj()
+				.Str("op", "setText")
+				.Int("id", id)
+				.Str("text", Text::ToUtf8(std::move(text)))
+				.Build());
 	}
 
 	void AppendText(Tag*, std::int32_t id, std::string text)
 	{
-		WidgetHost::Get().Send(
-			Json::Obj().Str("op", "appendText").Int("id", id).Str("text", text).Build());
+		WidgetHost::Get().Send(Json::Obj()
+				.Str("op", "appendText")
+				.Int("id", id)
+				.Str("text", Text::ToUtf8(std::move(text)))
+				.Build());
 	}
 
 	void SetPos(Tag*, std::int32_t id, std::int32_t x, std::int32_t y)
@@ -165,6 +171,7 @@ namespace
 
 	void Destroy(Tag*, std::int32_t id)
 	{
+		WidgetHost::Get().EraseMetrics(id);
 		WidgetHost::Get().Send(Json::Obj().Str("op", "destroy").Int("id", id).Build());
 	}
 
@@ -275,6 +282,8 @@ namespace
 	void Reset(Tag*)
 	{
 		auto& host = WidgetHost::Get();
+		// Ids are never reused, so every cached size belongs to a dead widget.
+		host.ClearAllMetrics();
 		host.Send(Json::Obj()
 				.Str("op", "reset")
 				.Int("nextId", host.PeekNextId())
@@ -284,34 +293,39 @@ namespace
 
 bool RegisterPapyrusFunctions(VM* vm)
 {
-	vm->RegisterFunction("IsReady", SCRIPT, IsReady);
-	vm->RegisterFunction("LoadWidget", SCRIPT, LoadWidget);
-	vm->RegisterFunction("LoadText", SCRIPT, LoadText);
-	vm->RegisterFunction("LoadMeter", SCRIPT, LoadMeter);
-	vm->RegisterFunction("SetText", SCRIPT, SetText);
-	vm->RegisterFunction("AppendText", SCRIPT, AppendText);
-	vm->RegisterFunction("SetPos", SCRIPT, SetPos);
-	vm->RegisterFunction("SetSize", SCRIPT, SetSize);
-	vm->RegisterFunction("GetXSize", SCRIPT, GetXSize);
-	vm->RegisterFunction("GetYSize", SCRIPT, GetYSize);
-	vm->RegisterFunction("SetZoom", SCRIPT, SetZoom);
-	vm->RegisterFunction("SetVisible", SCRIPT, SetVisible);
-	vm->RegisterFunction("SetRotation", SCRIPT, SetRotation);
-	vm->RegisterFunction("SetTransparency", SCRIPT, SetTransparency);
-	vm->RegisterFunction("SetRGB", SCRIPT, SetRGB);
-	vm->RegisterFunction("SendToBack", SCRIPT, SendToBack);
-	vm->RegisterFunction("SendToFront", SCRIPT, SendToFront);
-	vm->RegisterFunction("SwapDepths", SCRIPT, SwapDepths);
-	vm->RegisterFunction("Destroy", SCRIPT, Destroy);
-	vm->RegisterFunction("SetAllVisible", SCRIPT, SetAllVisible);
-	vm->RegisterFunction("DrawShapeLine", SCRIPT, DrawShapeLine);
-	vm->RegisterFunction("DrawShapeCircle", SCRIPT, DrawShapeCircle);
-	vm->RegisterFunction("DrawShapeOrbit", SCRIPT, DrawShapeOrbit);
-	vm->RegisterFunction("DoTransition", SCRIPT, DoTransition);
-	vm->RegisterFunction("SetMeterPercent", SCRIPT, SetMeterPercent);
-	vm->RegisterFunction("SetMeterFillDirection", SCRIPT, SetMeterFillDirection);
-	vm->RegisterFunction("DoMeterFlash", SCRIPT, DoMeterFlash);
-	vm->RegisterFunction("SetMeterColors", SCRIPT, SetMeterColors);
-	vm->RegisterFunction("Reset", SCRIPT, Reset);
+	// callableFromTasklets = true: the VM runs these directly on its stack
+	// threads instead of synchronizing each call to the main thread. All of
+	// them only touch WidgetHost (mutexes, atomics, task-queued view access),
+	// which was designed for exactly that - and it keeps first-time image
+	// decodes in LoadWidget off the render frame.
+	vm->RegisterFunction("IsReady", SCRIPT, IsReady, true);
+	vm->RegisterFunction("LoadWidget", SCRIPT, LoadWidget, true);
+	vm->RegisterFunction("LoadText", SCRIPT, LoadText, true);
+	vm->RegisterFunction("LoadMeter", SCRIPT, LoadMeter, true);
+	vm->RegisterFunction("SetText", SCRIPT, SetText, true);
+	vm->RegisterFunction("AppendText", SCRIPT, AppendText, true);
+	vm->RegisterFunction("SetPos", SCRIPT, SetPos, true);
+	vm->RegisterFunction("SetSize", SCRIPT, SetSize, true);
+	vm->RegisterFunction("GetXSize", SCRIPT, GetXSize, true);
+	vm->RegisterFunction("GetYSize", SCRIPT, GetYSize, true);
+	vm->RegisterFunction("SetZoom", SCRIPT, SetZoom, true);
+	vm->RegisterFunction("SetVisible", SCRIPT, SetVisible, true);
+	vm->RegisterFunction("SetRotation", SCRIPT, SetRotation, true);
+	vm->RegisterFunction("SetTransparency", SCRIPT, SetTransparency, true);
+	vm->RegisterFunction("SetRGB", SCRIPT, SetRGB, true);
+	vm->RegisterFunction("SendToBack", SCRIPT, SendToBack, true);
+	vm->RegisterFunction("SendToFront", SCRIPT, SendToFront, true);
+	vm->RegisterFunction("SwapDepths", SCRIPT, SwapDepths, true);
+	vm->RegisterFunction("Destroy", SCRIPT, Destroy, true);
+	vm->RegisterFunction("SetAllVisible", SCRIPT, SetAllVisible, true);
+	vm->RegisterFunction("DrawShapeLine", SCRIPT, DrawShapeLine, true);
+	vm->RegisterFunction("DrawShapeCircle", SCRIPT, DrawShapeCircle, true);
+	vm->RegisterFunction("DrawShapeOrbit", SCRIPT, DrawShapeOrbit, true);
+	vm->RegisterFunction("DoTransition", SCRIPT, DoTransition, true);
+	vm->RegisterFunction("SetMeterPercent", SCRIPT, SetMeterPercent, true);
+	vm->RegisterFunction("SetMeterFillDirection", SCRIPT, SetMeterFillDirection, true);
+	vm->RegisterFunction("DoMeterFlash", SCRIPT, DoMeterFlash, true);
+	vm->RegisterFunction("SetMeterColors", SCRIPT, SetMeterColors, true);
+	vm->RegisterFunction("Reset", SCRIPT, Reset, true);
 	return true;
 }
