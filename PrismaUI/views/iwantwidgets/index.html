@@ -112,7 +112,14 @@ function makeWidget(id, type, x, y, visible) {
     frames: null, frameIdx: 0, animTimer: 0,  // animated icons
     imgSrcEl: null,                  // off-DOM Image (data-URL fallback path)
     z: ++zTop,
-    meter: null
+    meter: null,
+    // Images load at their native DDS size and are only shrunk to the bar's
+    // icon size by a later setSize (_resizeIconToBar). Consumers reload icons
+    // by destroy+recreate, and on that path the icon is made visible BEFORE
+    // it's resized — which would flash it at full native size. Gate visibility
+    // on having been sized so a reload never shows a giant icon; text/meters
+    // are sized at creation so they default ready.
+    sized: true
   };
   widgets.set(id, w);
   applyAll(w);
@@ -124,7 +131,7 @@ function applyAll(w) {
   w.el.style.top = w.y + 'px';
   w.el.style.transform = 'rotate(' + w.rotation + 'deg) scale(' + (w.xscale / 100) + ',' + (w.yscale / 100) + ')';
   w.el.style.opacity = Math.max(0, Math.min(100, w.alpha)) / 100;
-  w.el.style.visibility = w.visible ? 'visible' : 'hidden';
+  w.el.style.visibility = (w.visible && w.sized) ? 'visible' : 'hidden';
   w.el.style.zIndex = w.z;
 }
 
@@ -322,6 +329,7 @@ const OPS = {
 
   loadWidget(a) {
     const w = makeWidget(a.id, 'image', a.x, a.y, a.vis);
+    w.sized = false;   // stay hidden until _resizeIconToBar sizes it (no native-size flash)
     const cv = document.createElement('canvas');
     cv.width = Math.max(1, a.w);
     cv.height = Math.max(1, a.h);
@@ -411,7 +419,9 @@ const OPS = {
     // resizing the content to the requested pixel box.
     const w = widgets.get(a.id);
     if (!w) return;
+    w.sized = true;   // an explicit resize arrived — safe to show at bar size
     setContentSize(w, a.w, a.h);
+    applyAll(w);
   },
 
   setZoom(a) {
