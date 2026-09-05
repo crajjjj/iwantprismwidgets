@@ -61,7 +61,11 @@ PrismaUI/views/iwantwidgets/index.html            (widget registry, transforms,
 - Reset flow: player alias fires on `OnInit`/`OnPlayerLoadGame` →
   `triggerReset()` → native `Reset()` (view wipes all widgets, old ids go
   stale) → `SendModEvent("iWantWidgetsReset")` → consumers rebuild, exactly as
-  they do today.
+  they do today. The view outlives save-loads, so a reset is only needed once
+  per game launch — when the fresh view's ids and a save's stored ids first
+  disagree. The alias gates on the native `NeedsResync()` and skips the reset
+  on later same-session loads, since each one costs every consumer a full
+  icon reload.
 
 ## Repo layout
 
@@ -87,8 +91,8 @@ xmake f -m release
 xmake
 ```
 
-Output: `iWantWidgetsPrisma.dll`. DirectXTex is pulled via xmake-repo
-(`add_requires("directxtex")`).
+Output: `iWantWidgetsPrisma.dll`. Image decoding uses Windows' built-in WIC, so
+there is no third-party image dependency to fetch.
 
 ### Papyrus scripts
 
@@ -189,8 +193,13 @@ Data/
   directions (`left`/`right`/`both`) behave as documented.
 - Fonts: `$EverywhereFont` etc. map to CSS stacks in `index.html` (`FONTS`).
   Drop `.ttf` files next to the view and add `@font-face` for exact matches.
-- `doTransition` keeps the original's quirk of running at half the advertised
-  frame rate (fps=30 vs 60-frame defaults) because consumers tuned against it.
+- `doTransition` **snaps to the target value instead of animating.** Ultralight
+  does not tick timers in an unfocused overlay the way Flash ticked frames, and
+  consumers re-issue transitions (e.g. `setTransparency`) faster than any fade
+  completes — which stranded icons part-way through a fade, positioned and
+  sized but invisible. Snapping makes the end state deterministic; every
+  transition still ends exactly where the Flash original ended, just without
+  the intermediate frames. Delays are still honored.
 
 ## Credits
 

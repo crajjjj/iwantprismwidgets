@@ -64,7 +64,6 @@ const widgets = new Map();      // id -> state
 // Survives reset() on purpose - the DLL's sent-set matches this cache's life.
 const imageCache = new Map();   // file -> {pixels?|frames?, pw, ph}
 const imageWaiters = new Map(); // file -> [widget] loaded before their pixels arrived
-let lowestWidget = 0;           // ids below this are from before the last reset
 let zTop = 1;
 let zBottom = 0;
 
@@ -124,7 +123,7 @@ function makeWidget(id, type, x, y, visible) {
     // it's resized — which would flash it at full native size. Gate visibility
     // on having been sized so a reload never shows a giant icon; text/meters
     // are sized at creation so they default ready.
-    sized: true
+    sized: true, sizeTimer: 0
   };
   widgets.set(id, w);
   applyAll(w);
@@ -352,10 +351,13 @@ function cssRGB(v) {
 /* ---------- op dispatch ---------- */
 const OPS = {
   reset(a) {
-    lowestWidget = a.nextId;
     tweens.forEach((t) => { clearTimeout(t.delay); });
     tweens.clear();
-    widgets.forEach(w => { clearTimeout(w.animTimer); w.el.remove(); });
+    widgets.forEach(w => {
+      clearTimeout(w.animTimer);
+      clearTimeout(w.sizeTimer);
+      w.el.remove();
+    });
     widgets.clear();
     imageWaiters.clear();
     // imageCache intentionally survives: the DLL's per-view sent-set does too.
@@ -365,6 +367,16 @@ const OPS = {
   loadWidget(a) {
     const w = makeWidget(a.id, 'image', a.x, a.y, a.vis);
     w.sized = false;   // stay hidden until _resizeIconToBar sizes it (no native-size flash)
+    // A setSize was never REQUIRED by this API - the Flash original drew a
+    // loaded widget at its native size - so a consumer that only ever calls
+    // loadWidget must not stay hidden behind that gate forever. Stop waiting
+    // after a grace period and show the icon as loaded.
+    w.sizeTimer = setTimeout(() => {
+      if (widgets.get(a.id) === w && !w.sized) {
+        w.sized = true;
+        applyAll(w);
+      }
+    }, 500);
     const cv = document.createElement('canvas');
     cv.width = Math.max(1, a.w);
     cv.height = Math.max(1, a.h);
@@ -458,6 +470,7 @@ const OPS = {
     const w = widgets.get(a.id);
     if (!w) return;
     w.sized = true;   // an explicit resize arrived — safe to show at bar size
+    clearTimeout(w.sizeTimer);
     setContentSize(w, a.w, a.h);
     applyAll(w);
   },
@@ -527,6 +540,7 @@ const OPS = {
     ['_x', '_y', '_xscale', '_yscale', '_rotation', '_alpha', 'percent']
       .forEach(attr => killTween(a.id + ':' + attr));
     clearTimeout(w.animTimer);
+    clearTimeout(w.sizeTimer);
     w.el.remove();
     widgets.delete(a.id);
   },
