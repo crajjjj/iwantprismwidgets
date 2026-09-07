@@ -4,7 +4,7 @@ set_xmakever("2.8.2")
 includes("lib/commonlibsse-ng")
 
 set_project("iWantWidgetsPrisma")
-set_version("0.1.0")
+set_version("0.2.0")
 set_license("MIT")
 
 set_languages("c++23")
