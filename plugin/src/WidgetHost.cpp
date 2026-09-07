@@ -459,7 +459,22 @@ void WidgetHost::OnDataLoaded()
 {
 	api_ = PRISMA_UI_API::RequestPluginAPI<PRISMA_UI_API::IVPrismaUI1>();
 	if (!api_) {
-		logger::critical("PrismaUI.dll not found or API request failed - widgets will not render");
+		// A hard requirement, but install-time contracts don't hold at runtime:
+		// not installed, SKSE refused the DLL (game/SKSE version), quarantined,
+		// or a PrismaUI too old to serve the API. Say so where the user will
+		// actually see it - an in-game box, not just the log.
+		const bool dllLoaded = GetModuleHandleA("PrismaUI.dll") != nullptr;
+		if (dllLoaded) {
+			logger::critical(
+				"PrismaUI.dll is loaded but rejected the API request (too old?) - widgets will not render");
+		} else {
+			logger::critical(
+				"PrismaUI.dll is not loaded (not installed, or SKSE refused it) - widgets will not render");
+		}
+		RE::DebugMessageBox(
+			"iWant Widgets - Prisma Edition\n\nPrismaUI is missing or failed to load, "
+			"so widgets will NOT render.\nInstall or update PrismaUI (listed under "
+			"requirements), then restart the game.");
 		return;
 	}
 
