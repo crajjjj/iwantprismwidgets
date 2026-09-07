@@ -28,8 +28,9 @@ namespace
 	{
 		switch (message->type) {
 		case SKSE::MessagingInterface::kDataLoaded:
-			// PrismaUI.dll is guaranteed loaded by now; acquire the API and
-			// create the (session-lifetime) view.
+			// Every SKSE plugin is loaded by now, so this is the point where
+			// PrismaUI either answers the API request or is missing. Acquires
+			// the API and creates the (session-lifetime) view.
 			WidgetHost::Get().OnDataLoaded();
 			break;
 		}

@@ -461,8 +461,8 @@ void WidgetHost::OnDataLoaded()
 	if (!api_) {
 		// A hard requirement, but install-time contracts don't hold at runtime:
 		// not installed, SKSE refused the DLL (game/SKSE version), quarantined,
-		// or a PrismaUI too old to serve the API. Say so where the user will
-		// actually see it - an in-game box, not just the log.
+		// or a PrismaUI too old to serve the API. Which one it is decides what
+		// the user has to do about it, so say so.
 		const bool dllLoaded = GetModuleHandleA("PrismaUI.dll") != nullptr;
 		if (dllLoaded) {
 			logger::critical(
@@ -471,10 +471,6 @@ void WidgetHost::OnDataLoaded()
 			logger::critical(
 				"PrismaUI.dll is not loaded (not installed, or SKSE refused it) - widgets will not render");
 		}
-		RE::DebugMessageBox(
-			"iWant Widgets - Prisma Edition\n\nPrismaUI is missing or failed to load, "
-			"so widgets will NOT render.\nInstall or update PrismaUI (listed under "
-			"requirements), then restart the game.");
 		return;
 	}
 
@@ -509,6 +505,14 @@ void WidgetHost::OnDataLoaded()
 			}
 		}
 	});
+
+	if (!view_) {
+		// Most likely our own view file is missing (partial install, or an
+		// overwrite): the API is fine, so nothing else would ever complain.
+		logger::critical("failed to create the PrismaUI view '{}' - widgets will not render",
+			VIEW_PATH);
+		return;
+	}
 
 	api_->RegisterJSListener(view_, "iwMetrics", [](const char* arg) {
 		int id = 0, w = 0, h = 0;
