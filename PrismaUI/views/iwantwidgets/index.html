@@ -115,6 +115,11 @@ function makeWidget(id, type, x, y, visible) {
     pixels: null, pw: 0, ph: 0,      // raw RGBA + natural size
     frames: null, frameIdx: 0, animTimer: 0,  // animated icons
     imgSrcEl: null,                  // off-DOM Image (data-URL fallback path)
+    // setRGB paints a widget a flat colour (Flash ColorTransform.rgb), which is
+    // what the DDS mask libraries are authored for. The DLL clears this for
+    // formats that carry finished colour art (PNG/JPG/GIF) so their own colours
+    // survive; text and meters keep colouring normally.
+    tintable: true,
     z: ++zTop,
     meter: null,
     // Images load at their native DDS size and are only shrunk to the bar's
@@ -166,15 +171,17 @@ function setContentSize(w, cw, ch) {
 
 /* Image widgets render on a canvas. Tinting reproduces Flash's
    ColorTransform.rgb — the widget becomes a flat color silhouetted by its own
-   alpha channel — done per-pixel (DDS path) or with a source-in composite
-   (PNG/JPG path). Ultralight lacks CSS mask support, so no masks here. */
+   alpha channel — per-pixel on the raw-RGBA path, or with a source-in
+   composite on the data-URL fallback. It applies only to tintable widgets
+   (the DDS mask libraries), never to formats carrying finished colour art.
+   Ultralight lacks CSS mask support, so no masks here. */
 function paintImage(w) {
   const cv = w.inner.firstChild;
   if (!cv || cv.tagName !== 'CANVAS') return;
   const ctx = cv.getContext('2d');
   if (w.pixels) {
     const im = ctx.createImageData(w.pw, w.ph);
-    const d = im.data, s = w.pixels, t = w.tintRGB;
+    const d = im.data, s = w.pixels, t = w.tintable ? w.tintRGB : null;
     if (t) {
       for (let i = 0; i < s.length; i += 4) {
         d[i] = t[0]; d[i + 1] = t[1]; d[i + 2] = t[2]; d[i + 3] = s[i + 3];
@@ -187,7 +194,7 @@ function paintImage(w) {
     ctx.globalCompositeOperation = 'source-over';
     ctx.clearRect(0, 0, cv.width, cv.height);
     ctx.drawImage(w.imgSrcEl, 0, 0);
-    if (w.tintRGB) {
+    if (w.tintRGB && w.tintable) {
       ctx.globalCompositeOperation = 'source-in';
       ctx.fillStyle = w.tint;
       ctx.fillRect(0, 0, cv.width, cv.height);
@@ -209,6 +216,7 @@ function applyTint(w) {
 function attachImage(w, entry) {
   w.pw = entry.pw;
   w.ph = entry.ph;
+  if (entry.tint === false) w.tintable = false;
   if (entry.frames) {
     w.frames = entry.frames;
     w.pixels = entry.frames[0].data;
@@ -385,18 +393,19 @@ const OPS = {
       // Animated icon: composited GIF frames or spritesheet slices.
       const entry = {
         frames: a.frames.map(f => ({ ms: f.ms, data: b64ToPixels(f.px) })),
-        pw: a.w, ph: a.h
+        pw: a.w, ph: a.h, tint: a.tint
       };
       if (a.file) cacheImage(a.file, entry);
       attachImage(w, entry);
     } else if (a.px) {
       // Raw RGBA from the DLL's decoder.
-      const entry = { pixels: b64ToPixels(a.px), pw: a.w, ph: a.h };
+      const entry = { pixels: b64ToPixels(a.px), pw: a.w, ph: a.h, tint: a.tint };
       if (a.file) cacheImage(a.file, entry);
       attachImage(w, entry);
     } else if (a.file) {
       const entry = imageCache.get(a.file);
       if (entry) {
+        if (a.tint === false) w.tintable = false;
         attachImage(w, entry);
       } else {
         // Two Papyrus threads can load the same new file concurrently: the
@@ -407,6 +416,7 @@ const OPS = {
         q.push(w);
       }
     } else {
+      if (a.tint === false) w.tintable = false;
       const img = new Image();
       w.imgSrcEl = img;
       img.addEventListener('load', () => {

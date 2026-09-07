@@ -57,6 +57,14 @@ public:
 		std::vector<Frame> frames;
 		int w = 0;
 		int h = 0;
+		// Flash's ColorTransform.rgb REPLACES a widget's colour, so the icon
+		// libraries are authored as white masks that setRGB paints. Alternate
+		// formats exist to carry finished colour art, which that flattening
+		// would destroy - so only DDS is tinted, and PNG/JPG/GIF render as
+		// authored. Keeping it per-format (not per-image content) matters:
+		// the states of one icon must not classify differently from each
+		// other, and every existing icon is DDS, so nothing changes for them.
+		bool tint = true;
 	};
 
 	// file is the raw path consumers pass to loadWidget, rooted (like the

@@ -33,6 +33,9 @@ namespace
 				c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
 			}
 			o.Str("file", key);
+			if (!img.tint) {
+				o.Boolean("tint", false);
+			}
 			if (host.ShouldSendPixels(key)) {
 				if (!img.frames.empty()) {
 					std::string arr = "[";

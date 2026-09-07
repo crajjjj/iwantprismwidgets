@@ -673,6 +673,8 @@ const WidgetHost::ImageData& WidgetHost::LoadImageFile(const std::string& file)
 		logger::error("loadWidget: cannot read '{}' (loose or BSA)", relPath);
 	} else if (ext == ".dds" || ext == ".png" || ext == ".jpg" || ext == ".jpeg" ||
 			   ext == ".gif") {
+		// Only the DDS libraries are white masks meant to be painted by setRGB.
+		data.tint = (ext == ".dds");
 		if (ext == ".gif" && DecodeGifFrames(bytes, data)) {
 			// Animated GIF: composited frames carry it from here.
 		} else {
