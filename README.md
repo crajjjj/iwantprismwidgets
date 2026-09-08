@@ -203,7 +203,12 @@ Data/
   light→dark gradient, flash overlay). `percent` transitions and fill
   directions (`left`/`right`/`both`) behave as documented.
 - Fonts: `$EverywhereFont` etc. map to CSS stacks in `index.html` (`FONTS`).
-  Drop `.ttf` files next to the view and add `@font-face` for exact matches.
+  For exact matches, drop `.ttf`/`.otf` files into
+  `PrismaUI/views/iwantwidgets/font/` — each file backs the font named by its
+  file stem, no HTML editing: `$everywherefont.ttf` makes `$EverywhereFont`
+  render with that face, `nova cut.ttf` backs `loadText(..., "Nova Cut")`.
+  Custom faces are prepended to the normal stack, so removing the file falls
+  back cleanly. (Mechanism borrowed from TrueFlasksNG.)
 - `doTransition` **snaps to the target value instead of animating.** Ultralight
   does not tick timers in an unfocused overlay the way Flash ticked frames, and
   consumers re-issue transitions (e.g. `setTransparency`) faster than any fade

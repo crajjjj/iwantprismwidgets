@@ -5,7 +5,6 @@
 #include <cstdio>
 #include <cstring>
 #include <regex>
-#include <set>
 
 #include <propidl.h>
 
@@ -397,16 +396,77 @@ namespace
 namespace
 {
 	// Menus that hide the vanilla HUD (and with it, the Flash widgets this
-	// mod replaces). MessageBoxMenu, the fader/cursor menus, and Console
-	// deliberately aren't listed - the HUD stays visible under those (the
-	// Flash original kept rendering with the console open).
+	// mod replaces). MessageBoxMenu, CursorMenu and Console deliberately
+	// aren't listed - the HUD stays visible under those (the Flash original
+	// kept rendering with the console open).
+	//
+	// "Fader Menu" IS listed, despite not being transition-specific. A door
+	// transition brackets the loading menu with fades on both sides, and the
+	// trailing one outlives it by a couple of seconds - so keying on the
+	// loading menu alone leaves the overlay drawn over a black screen at each
+	// end. The cost is that the HUD also goes away for sleep/wait and scripted
+	// fades; the fade covers the screen then anyway.
 	constexpr const char* HIDE_MENUS[] = {
 		"Dialogue Menu", "InventoryMenu", "MagicMenu", "MapMenu",
 		"StatsMenu", "ContainerMenu", "BarterMenu", "GiftMenu", "Training Menu",
 		"Lockpicking Menu", "Book Menu", "Crafting Menu", "FavoritesMenu",
 		"Journal Menu", "Sleep/Wait Menu", "LevelUp Menu", "Main Menu",
-		"Loading Menu", "RaceSex Menu", "TweenMenu", "Mist Menu"
+		"Loading Menu", "RaceSex Menu", "TweenMenu", "Mist Menu", "Fader Menu"
 	};
+
+	// TrueFlasksNG's font mechanism: every .ttf/.otf in the view's font/
+	// folder is registered in the page, keyed by its file stem - so
+	// "$everywherefont.ttf" makes $EverywhereFont render with Skyrim's real
+	// face, and "nova cut.ttf" backs loadText(..., "Nova Cut"). Ops queue
+	// until the view's DOM is ready, so this can fire right after creation.
+	void SendCustomFonts()
+	{
+		namespace fs = std::filesystem;
+		const fs::path dir = "Data/PrismaUI/views/iwantwidgets/font";
+		std::error_code ec;
+		if (!fs::is_directory(dir, ec)) {
+			return;
+		}
+		std::vector<fs::path> files;
+		for (const auto& entry : fs::directory_iterator(dir, ec)) {
+			std::error_code fec;
+			if (!entry.is_regular_file(fec)) {
+				continue;
+			}
+			const std::string ext = ToLower(entry.path().extension().string());
+			if (ext == ".ttf" || ext == ".otf") {
+				files.push_back(entry.path());
+			}
+		}
+		std::sort(files.begin(), files.end());
+		for (const auto& p : files) {
+			const std::string alias = ToLower(p.stem().string());
+			logger::info("custom font: '{}' <- {}", alias, p.filename().string());
+			WidgetHost::Get().Send(Json::Obj()
+					.Str("op", "loadFont")
+					.Str("file", p.filename().string())
+					.Str("alias", alias)
+					.Build());
+		}
+	}
+
+	// Live truth, re-read each time rather than tracked from open/close deltas.
+	// A delta set stays wrong forever if one event is missed or reordered
+	// (strand a name and the overlay never returns); reading current state is
+	// self-correcting.
+	bool AnyHideMenuOpen()
+	{
+		auto* ui = RE::UI::GetSingleton();
+		if (!ui) {
+			return false;
+		}
+		for (const char* m : HIDE_MENUS) {
+			if (ui->IsMenuOpen(m)) {
+				return true;
+			}
+		}
+		return false;
+	}
 
 	class MenuWatcher final : public RE::BSTEventSink<RE::MenuOpenCloseEvent>
 	{
@@ -417,35 +477,23 @@ namespace
 			return &instance;
 		}
 
-		RE::BSEventNotifyControl ProcessEvent(const RE::MenuOpenCloseEvent* ev,
+		// Every menu event re-asks the UI which of our menus are open, rather
+		// than maintaining a set from open/close deltas. Deriving state from a
+		// delta stream means one missed or out-of-order event stays wrong
+		// forever - strand a name in the set and the overlay never comes back.
+		// Reading current truth is self-correcting: the next menu event of any
+		// kind repairs it. (Same approach TrueFlasksNG uses for its widget.)
+		// Cost is a handful of hash lookups per event, and the refresh
+		// already no-ops when the answer has not changed.
+		RE::BSEventNotifyControl ProcessEvent(const RE::MenuOpenCloseEvent*,
 			RE::BSTEventSource<RE::MenuOpenCloseEvent>*) override
 		{
-			if (!ev) {
-				return RE::BSEventNotifyControl::kContinue;
-			}
-			const std::string_view name = ev->menuName.c_str();
-			bool relevant = false;
-			for (const char* m : HIDE_MENUS) {
-				if (name == m) {
-					relevant = true;
-					break;
-				}
-			}
-			if (relevant) {
-				std::scoped_lock lock(mtx_);
-				if (ev->opening) {
-					open_.insert(std::string(name));
-				} else {
-					open_.erase(std::string(name));
-				}
-				WidgetHost::Get().SetMenusClear(open_.empty());
-			}
+			// Menu events fire on the main thread, so PrismaUI is called
+			// inline - the context TrueFlasksNG invokes from, and the one that
+			// applies a hide at load onset before the task queue can stall.
+			WidgetHost::Get().RefreshOverlayVisibility(true);
 			return RE::BSEventNotifyControl::kContinue;
 		}
-
-	private:
-		std::mutex mtx_;
-		std::set<std::string> open_;
 	};
 }
 
@@ -527,12 +575,26 @@ void WidgetHost::OnDataLoaded()
 	if (auto* api2 = PRISMA_UI_API::RequestPluginAPI<PRISMA_UI_API::IVPrismaUI2>()) {
 		api2->RegisterConsoleCallback(view_,
 			[](PrismaView, PRISMA_UI_API::ConsoleMessageLevel level, const char* msg) {
-				if (msg && (level == PRISMA_UI_API::ConsoleMessageLevel::Error ||
-							   level == PRISMA_UI_API::ConsoleMessageLevel::Warning)) {
-					logger::error("view: {}", msg);
+				if (!msg) {
+					return;
+				}
+				switch (level) {
+				case PRISMA_UI_API::ConsoleMessageLevel::Error:
+					logger::error("[JS] {}", msg);
+					break;
+				case PRISMA_UI_API::ConsoleMessageLevel::Warning:
+					logger::warn("[JS] {}", msg);
+					break;
+				default:
+					// console.log in the view is a diagnostic someone put
+					// there on purpose; make it reach the file log too.
+					logger::info("[JS] {}", msg);
+					break;
 				}
 			});
 	}
+
+	SendCustomFonts();
 
 	if (auto* ui = RE::UI::GetSingleton()) {
 		ui->AddEventSink(MenuWatcher::GetSingleton());
@@ -549,56 +611,51 @@ void WidgetHost::OnDataLoaded()
 			if (st.stop_requested()) {
 				break;
 			}
-			if (auto* ui = RE::UI::GetSingleton()) {
-				WidgetHost::Get().SetGameHudShown(ui->IsShowingMenus());
-			}
+			// Re-derive from live state on a background thread: catches the
+			// menus-shown flag (`tm`, native HUD hiders that raise no menu
+			// event) and repairs any stale answer within one interval. false ->
+			// the actual PrismaUI call is marshalled to the main thread, never
+			// made raw from here.
+			WidgetHost::Get().RefreshOverlayVisibility(false);
 		}
 	});
 
 	logger::info("iWant Widgets view created ({})", VIEW_PATH);
 }
 
-void WidgetHost::SetMenusClear(bool clear)
+void WidgetHost::RefreshOverlayVisibility(bool onMainThread)
 {
-	menusClear_ = clear;
-	ApplyVisibility();
-}
-
-void WidgetHost::SetGameHudShown(bool shown)
-{
-	if (gameHudShown_.exchange(shown) != shown) {
-		ApplyVisibility();
+	// TrueFlasksNG's visibility model (src/UI/Prisma.cpp on_menu_event): derive
+	// the answer from live UI state and drive the view's own JS Show()/Hide()
+	// via Invoke. Unlike PrismaUI's native Show/Hide, a JS opacity change keeps
+	// hiding the overlay across a loading screen (the reason it exists), and
+	// Invoke from a menu event is the call TrueFlasksNG makes in production.
+	//
+	// The PrismaUI call must originate on the MAIN thread - inline when the
+	// caller already is one (the menu-event sink), marshalled otherwise (the
+	// HUD poll). One deviation from TrueFlasksNG: it has no game-HUD flag, but
+	// the Flash original followed the vanilla HUD (`tm`, native HUD hiders like
+	// SexLab's Hide HUD), so IsShowingMenus stays in the decision.
+	if (!api_ || !view_ || !api_->IsValid(view_)) {
+		return;
 	}
-}
-
-void WidgetHost::ApplyVisibility()
-{
-	// Deciding and queueing must be one step. Menu events and the HUD poll
-	// thread both land here, and if they interleave between the read and the
-	// enqueue they can push HIDE and SHOW in the opposite order to the
-	// decisions - leaving the overlay in a state that agrees with the flags,
-	// so nothing ever corrects it.
-	bool visible;
-	{
-		std::scoped_lock lock(visMtx_);
-		visible = menusClear_.load() && gameHudShown_.load();
-		if (overlayVisible_.exchange(visible) == visible) {
-			return;
-		}
-		// AddUITask, not AddTask: the UI pump keeps draining during a loading
-		// screen, while the main task queue stalls until the load finishes. A
-		// door transition opens the loading menu (our cue to hide), so a Hide
-		// on the main queue would not run until the transition was already
-		// over - leaving the overlay drawn across it. Deferring also avoids
-		// the deadlock that calling PrismaUI straight from the menu event hit.
-		SKSE::GetTaskInterface()->AddUITask([visible]() {
+	auto* ui = RE::UI::GetSingleton();
+	if (!ui) {
+		return;
+	}
+	const bool show = ui->IsShowingMenus() && !AnyHideMenuOpen();
+	// Skip exact repeats so Show()'s fade-in is not restarted by unrelated
+	// menu traffic, and so the poll does not re-issue every interval.
+	if (overlayVisible_.exchange(show) == show) {
+		return;
+	}
+	if (onMainThread) {
+		api_->Invoke(view_, show ? "Show()" : "Hide()");
+	} else {
+		SKSE::GetTaskInterface()->AddTask([show]() {
 			auto& host = WidgetHost::Get();
 			if (host.api_ && host.view_ && host.api_->IsValid(host.view_)) {
-				if (visible) {
-					host.api_->Show(host.view_);
-				} else {
-					host.api_->Hide(host.view_);
-				}
+				host.api_->Invoke(host.view_, show ? "Show()" : "Hide()");
 			}
 		});
 	}
@@ -680,14 +737,24 @@ void WidgetHost::EnqueueOp(std::string json)
 			schedule = true;
 		}
 	}
-	// Funnel view access through one pump; natives run on Papyrus VM threads and
-	// Ultralight is not documented thread-safe. Use the SAME pump
-	// ApplyVisibility uses (AddUITask) so ops and Show/Hide keep their relative
-	// order - the two pumps drain at different points, so splitting them lets a
-	// visibility flip overtake the ops it was meant to accompany. One task per
-	// burst: everything queued before the task runs goes out as one batch.
+	// Serialize all view access onto the MAIN thread via AddTask; natives run
+	// on Papyrus VM threads and Ultralight is not documented thread-safe.
+	//
+	// AddTask, never AddUITask. This exact line spent a while on the UI-task
+	// pump and that was a REGRESSION: intermittent whole-game hangs on door
+	// transitions, which v0.2.0 (AddTask) never had and which TrueFlasksNG -
+	// whose every PrismaUI call originates on the main thread - does not hit
+	// in the same load order. The UI pump delivers at points in the frame
+	// where calling into PrismaUI can wedge the present chain. The one thing
+	// that ever wanted the UI pump (hiding the overlay during loading, which
+	// the main queue sleeps through) no longer rides this pipeline at all -
+	// it is a synchronous Invoke from the menu-event sink. Ops stalling until
+	// a load finishes is fine: nobody sees widgets mid-load.
+	//
+	// One task per burst: everything queued before the task runs goes out as
+	// one batch.
 	if (schedule) {
-		SKSE::GetTaskInterface()->AddUITask([]() { WidgetHost::Get().FlushBatch(); });
+		SKSE::GetTaskInterface()->AddTask([]() { WidgetHost::Get().FlushBatch(); });
 	}
 }
 

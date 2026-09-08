@@ -18,13 +18,13 @@ public:
 
 	bool IsReady() const;
 
-	// Mirrors the vanilla HUD's visibility: the Flash original lived inside
-	// the HUD menu and was hidden with it. The Prisma overlay has to follow
-	// two signals explicitly: HUD-suppressing menus (dialogue, inventory,
-	// loading...) and the global menus-shown flag (the `tm` toggle, which is
-	// also how native HUD-hiders like SexLab's Hide HUD work).
-	void SetMenusClear(bool clear);
-	void SetGameHudShown(bool shown);
+	// Mirrors the vanilla HUD's visibility: the Flash original lived inside the
+	// HUD menu and was hidden with it. Re-derives the whole answer from live UI
+	// state (HUD-suppressing menus + the menus-shown flag) and applies it via
+	// the view's JS Show()/Hide() - the TrueFlasksNG model. onMainThread=true
+	// invokes PrismaUI inline (the menu-event sink, already on the main
+	// thread); false marshals it (the HUD poll's background thread).
+	void RefreshOverlayVisibility(bool onMainThread);
 
 	int NextId();
 	int PeekNextId() const;
@@ -107,20 +107,15 @@ private:
 	void EnqueueOp(std::string json);
 	void FlushBatch();
 
-	void ApplyVisibility();
-
 	PRISMA_UI_API::IVPrismaUI1* api_ = nullptr;
 	PrismaView view_ = 0;
 	std::atomic<bool> domReady_{ false };
 	std::atomic<bool> overlayVisible_{ true };
-	std::atomic<bool> menusClear_{ true };
-	std::atomic<bool> gameHudShown_{ true };
 	std::atomic<bool> viewFresh_{ true };
 	std::atomic<bool> bindingChecked_{ false };
 	std::atomic<int> nextId_{ 1 };
 
 	mutable std::mutex mtx_;
-	std::mutex visMtx_;
 	std::vector<std::string> pending_;
 	std::vector<std::string> batch_;
 	bool flushQueued_ = false;

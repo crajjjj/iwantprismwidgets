@@ -88,13 +88,27 @@ const FONTS = {
   '$skyrimbooks':          "Georgia, serif",
   '$handwrittenfont':      "cursive"
 };
+/* Fonts dropped into this view's font/ folder, registered at startup by the
+   DLL (loadFont op) and keyed by lowercased file stem. A custom face is
+   PREPENDED to the normal stack, so it wins when present and everything falls
+   back exactly as before when it is not. */
+const customFonts = {};
 function mapFont(f) {
-  const mapped = FONTS[String(f).toLowerCase()];
-  if (mapped) return mapped;
+  const key = String(f).toLowerCase();
+  const mapped = FONTS[key];
   /* An unmapped name goes through as-is, but Skyrim's $-aliases are not valid
      CSS identifiers: unquoted, one invalidates the whole font-family
      declaration and takes the fallbacks down with it. Quote it. */
-  return JSON.stringify(String(f)) + ", 'Arial Narrow', sans-serif";
+  const base = mapped || (JSON.stringify(String(f)) + ", 'Arial Narrow', sans-serif");
+  return customFonts[key] ? '"' + customFonts[key] + '", ' + base : base;
+}
+
+/* Glyphs swap in asynchronously once a custom face finishes loading; cached
+   text metrics from before the swap are stale, so re-measure. */
+if (document.fonts && document.fonts.addEventListener) {
+  document.fonts.addEventListener('loadingdone', () => {
+    widgets.forEach(w => { if (w.type === 'text') measureText(w); });
+  });
 }
 
 function b64ToPixels(b64) {
@@ -103,6 +117,24 @@ function b64ToPixels(b64) {
   for (let i = 0; i < bin.length; i++) px[i] = bin.charCodeAt(i);
   return px;
 }
+
+/* ---------- overlay visibility (TrueFlasksNG port) ---------- */
+/* Copied from TrueFlasksNG's TrueFlasksWidgetScript.js window.Hide/Show -
+   the known-working way to blank a PrismaUI widget across menus and loading
+   screens. Body opacity, driven by a synchronous native Invoke("Hide()").
+   One deviation: their fade-in is 3s (a flask aesthetic); status bars follow
+   menus constantly, so 0.3s. */
+window.Hide = () => {
+    document.body.style.transition = 'none';
+    document.body.style.opacity = '0';
+};
+
+window.Show = () => {
+    // Force a reflow before starting the fade-in.
+    void document.body.offsetWidth;
+    document.body.style.transition = 'opacity 0.3s ease';
+    document.body.style.opacity = '1';
+};
 
 /* ---------- registry / DOM ---------- */
 function makeWidget(id, type, x, y, visible) {
@@ -436,10 +468,34 @@ const OPS = {
     }
   },
 
+  /* A TTF/OTF from the view's font/ folder, announced by the DLL at startup
+     (TrueFlasksNG's mechanism). The file's stem is the font name it backs:
+     "$everywherefont.ttf" makes $EverywhereFont render with Skyrim's real
+     face, "nova cut.ttf" backs loadText(..., "Nova Cut"). Registered as
+     @font-face so the browser fetches lazily and swaps glyphs in when ready;
+     text created before that is restyled here and re-measured by the
+     loadingdone hook above. */
+  loadFont(a) {
+    const key = String(a.alias || '').toLowerCase();
+    if (!key || customFonts[key]) return;
+    const family = 'iwf-' + Object.keys(customFonts).length;
+    const st = document.createElement('style');
+    st.textContent = '@font-face { font-family: "' + family + '"; src: url("font/' +
+      encodeURI(a.file) + '"); }';
+    document.head.appendChild(st);
+    customFonts[key] = family;
+    widgets.forEach(w => {
+      if (w.type === 'text' && String(w.fontName).toLowerCase() === key) {
+        w.inner.firstChild.style.fontFamily = mapFont(w.fontName);
+      }
+    });
+  },
+
   loadText(a) {
     const w = makeWidget(a.id, 'text', a.x, a.y, a.vis);
     const d = document.createElement('div');
     d.className = 'txt';
+    w.fontName = a.font;
     d.style.fontFamily = mapFont(a.font);
     d.style.fontSize = a.size + 'px';
     d.textContent = a.text;
@@ -662,6 +718,15 @@ function placeOnArc(a, list, startAngle) {
   }
 }
 
+/* Failures in the dispatch path repeat every update tick; log each distinct
+   one once instead of flooding the console (TrueFlasksNG's warnOnce). */
+const warnedOnce = new Set();
+function warnOnce(key, msg) {
+  if (warnedOnce.has(key)) return;
+  warnedOnce.add(key);
+  console.error(msg);
+}
+
 /* Single entry point the DLL invokes: InteropCall("iwCall", json).
    The payload is one op object or an array of them (the DLL batches every op
    queued in a frame into one call - per-op InteropCalls made big consumer
@@ -672,7 +737,7 @@ function runOp(a) {
     const op = OPS[a.op];
     if (op) op(a);
   } catch (e) {
-    console.error('op ' + (a && a.op) + ' failed: ' + e);
+    warnOnce('op:' + (a && a.op) + ':' + e, 'op ' + (a && a.op) + ' failed: ' + e);
   }
 }
 
@@ -681,7 +746,7 @@ window.iwCall = function (json) {
   try {
     a = JSON.parse(json);
   } catch (e) {
-    console.error('iwCall parse failed: ' + e + ' payload: ' + String(json).slice(0, 200));
+    warnOnce('parse:' + e, 'iwCall parse failed: ' + e + ' payload: ' + String(json).slice(0, 200));
     return;
   }
   if (Array.isArray(a)) {
