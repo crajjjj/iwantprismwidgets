@@ -42,8 +42,8 @@ iWant Status Bars / addons (UNCHANGED .pex)
 iwant_widgets.psc      ← this repo: same script name & signatures, extends Quest
         │  Global Native calls
         ▼
-iWantWidgetsNative.psc ↔ iWantWidgetsPrisma.dll   (id allocation, JSON ops,
-        │                                          WIC image decode, metrics cache)
+iWantWidgetsNative.psc → WidgetOps ↔ iWantWidgetsPrisma.dll  (id allocation,
+        │                                 JSON ops, WIC image decode, metrics)
         ▼  InteropCall("iwCall", json)
 PrismaUI/views/iwantwidgets/index.html            (widget registry, transforms,
                                                    tweens, shapes, meters, text)
@@ -74,6 +74,7 @@ Source/Scripts/iwant_widgets.psc            drop-in fork (same public API as 1.3
 Source/Scripts/iWantWidgetsNative.psc       native declarations
 Source/Scripts/iwant_widgets_prisma_alias.psc  reset trigger (player alias)
 PrismaUI/views/iwantwidgets/index.html      the renderer
+plugin/src/WidgetOps.{h,cpp}                the widget ops behind the natives
 plugin/                                     SKSE plugin (xmake + CommonLibSSE-NG)
 ```
 
@@ -184,6 +185,16 @@ Data/
   - Other consumers get the format by passing that path to `loadWidget`
     directly (`loadWidget("…/foo_8f.png")`).
 - `loadWidget` with a `.swf` path cannot render (logged, becomes invisible).
+- Consumers that bypass Papyrus and drive iWant Widgets through **Scaleform**
+  (invoking methods on `_root.WidgetContainer.<n>.widget` in the HUD menu) are
+  **not supported** — there is no Flash movie here to find, so they silently
+  render nothing. Known case: **Pop Up Location Names SKSE**; use the regular
+  (Papyrus) version of that mod instead — it drives the documented
+  `iwant_widgets` API and renders correctly through this edition. (A full
+  stand-in ActionScript shim was built and verified callable — object and
+  full-path invokes both returned real widget ids in-game — yet PULN SKSE
+  never invoked it, for reasons internal to its DLL; it was dropped rather
+  than shipped as dead weight.)
 - Shape draws treat a nonexistent widget id as skippable even when
   `skipInvisible = False`; the Flash original consumed an angle/offset step in
   one sub-case. No known consumer hits this (Status Bars hard-codes

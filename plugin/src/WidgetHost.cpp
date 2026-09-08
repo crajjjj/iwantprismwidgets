@@ -573,20 +573,73 @@ void WidgetHost::SetGameHudShown(bool shown)
 
 void WidgetHost::ApplyVisibility()
 {
-	const bool visible = menusClear_.load() && gameHudShown_.load();
-	if (overlayVisible_.exchange(visible) == visible) {
+	// Deciding and queueing must be one step. Menu events and the HUD poll
+	// thread both land here, and if they interleave between the read and the
+	// enqueue they can push HIDE and SHOW in the opposite order to the
+	// decisions - leaving the overlay in a state that agrees with the flags,
+	// so nothing ever corrects it.
+	bool visible;
+	{
+		std::scoped_lock lock(visMtx_);
+		visible = menusClear_.load() && gameHudShown_.load();
+		if (overlayVisible_.exchange(visible) == visible) {
+			return;
+		}
+		// AddUITask, not AddTask: the UI pump keeps draining during a loading
+		// screen, while the main task queue stalls until the load finishes. A
+		// door transition opens the loading menu (our cue to hide), so a Hide
+		// on the main queue would not run until the transition was already
+		// over - leaving the overlay drawn across it. Deferring also avoids
+		// the deadlock that calling PrismaUI straight from the menu event hit.
+		SKSE::GetTaskInterface()->AddUITask([visible]() {
+			auto& host = WidgetHost::Get();
+			if (host.api_ && host.view_ && host.api_->IsValid(host.view_)) {
+				if (visible) {
+					host.api_->Show(host.view_);
+				} else {
+					host.api_->Hide(host.view_);
+				}
+			}
+		});
+	}
+}
+
+void WidgetHost::CheckScriptBinding()
+{
+	if (bindingChecked_.load()) {
 		return;
 	}
-	SKSE::GetTaskInterface()->AddTask([visible]() {
-		auto& host = WidgetHost::Get();
-		if (host.api_ && host.view_ && host.api_->IsValid(host.view_)) {
-			if (visible) {
-				host.api_->Show(host.view_);
-			} else {
-				host.api_->Hide(host.view_);
-			}
-		}
-	});
+	// Every early return below is INCONCLUSIVE, not a pass: latching the flag
+	// there would disable the diagnostic for the rest of the session over a
+	// transient (VM not up, type not linked yet). Only a definite answer latches.
+	auto* vm = RE::BSScript::Internal::VirtualMachine::GetSingleton();
+	if (!vm) {
+		return;
+	}
+	RE::BSTSmartPointer<RE::BSScript::ObjectTypeInfo> info;
+	if (!vm->GetScriptObjectTypeNoLoad("iWant_Widgets", info) || !info) {
+		return;
+	}
+	const auto* parent = info->GetParent();
+	const char* parentName = parent ? parent->GetName() : nullptr;
+	if (!parentName) {
+		return;   // type present but not linked through to its base yet
+	}
+
+	bindingChecked_.store(true);
+	if (_stricmp(parentName, "Quest") == 0) {
+		return;
+	}
+
+	logger::error("iwant_widgets.pex is NOT this mod's: the loaded iWant_Widgets "
+				  "script extends '{}' (ours extends Quest). A Flash-backed build is "
+				  "winning the file conflict, so nothing will render. Give this mod a "
+				  "HIGHER priority than iWant Widgets (and than iWant Widgets NG).",
+		parentName);
+	if (::GetModuleHandleA("IWantWidgetsNative.dll")) {
+		logger::error("  iWant Widgets NG is installed - it ships its own "
+					  "iwant_widgets.pex and is the likely source.");
+	}
 }
 
 bool WidgetHost::IsReady() const
@@ -627,11 +680,14 @@ void WidgetHost::EnqueueOp(std::string json)
 			schedule = true;
 		}
 	}
-	// Serialize all view access onto the main thread; natives run on Papyrus
-	// VM threads and Ultralight is not documented thread-safe. One task per
+	// Funnel view access through one pump; natives run on Papyrus VM threads and
+	// Ultralight is not documented thread-safe. Use the SAME pump
+	// ApplyVisibility uses (AddUITask) so ops and Show/Hide keep their relative
+	// order - the two pumps drain at different points, so splitting them lets a
+	// visibility flip overtake the ops it was meant to accompany. One task per
 	// burst: everything queued before the task runs goes out as one batch.
 	if (schedule) {
-		SKSE::GetTaskInterface()->AddTask([]() { WidgetHost::Get().FlushBatch(); });
+		SKSE::GetTaskInterface()->AddUITask([]() { WidgetHost::Get().FlushBatch(); });
 	}
 }
 

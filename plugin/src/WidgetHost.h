@@ -88,6 +88,15 @@ public:
 	bool NeedsResync() const { return viewFresh_.load(); }
 	void MarkResynced() { viewFresh_.store(false); }
 
+	// One-shot, called from a native only our own scripts reach: confirm the
+	// iWant_Widgets script the VM actually loaded is OURS. This mod ships
+	// deliberately under the original's script and plugin filenames, so a mod
+	// manager can just as easily serve the original's .pex - or iWant Widgets
+	// NG's - instead, and then nothing renders, with no error anywhere. Ours
+	// extends Quest; every Flash-backed build extends SKI_WidgetBase, so the
+	// parent type names the winner.
+	void CheckScriptBinding();
+
 private:
 	WidgetHost() = default;
 
@@ -107,9 +116,11 @@ private:
 	std::atomic<bool> menusClear_{ true };
 	std::atomic<bool> gameHudShown_{ true };
 	std::atomic<bool> viewFresh_{ true };
+	std::atomic<bool> bindingChecked_{ false };
 	std::atomic<int> nextId_{ 1 };
 
 	mutable std::mutex mtx_;
+	std::mutex visMtx_;
 	std::vector<std::string> pending_;
 	std::vector<std::string> batch_;
 	bool flushQueued_ = false;

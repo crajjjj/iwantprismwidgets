@@ -89,7 +89,12 @@ const FONTS = {
   '$handwrittenfont':      "cursive"
 };
 function mapFont(f) {
-  return FONTS[String(f).toLowerCase()] || (f + ", 'Arial Narrow', sans-serif");
+  const mapped = FONTS[String(f).toLowerCase()];
+  if (mapped) return mapped;
+  /* An unmapped name goes through as-is, but Skyrim's $-aliases are not valid
+     CSS identifiers: unquoted, one invalidates the whole font-family
+     declaration and takes the fallbacks down with it. Quote it. */
+  return JSON.stringify(String(f)) + ", 'Arial Narrow', sans-serif";
 }
 
 function b64ToPixels(b64) {

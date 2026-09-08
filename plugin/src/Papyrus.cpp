@@ -1,7 +1,9 @@
 #include "WidgetHost.h"
+#include "WidgetOps.h"
 
-// Papyrus natives backing iWantWidgetsNative.psc. Thin: allocate ids, build
-// the JSON op, hand it to WidgetHost. All widget semantics live in the view.
+// Papyrus natives backing iWantWidgetsNative.psc. Nothing but argument
+// marshalling: every widget semantic lives in WidgetOps and, below that, in
+// the view.
 
 namespace
 {
@@ -17,299 +19,160 @@ namespace
 
 	std::int32_t LoadWidget(Tag*, std::string file, std::int32_t x, std::int32_t y, bool visible)
 	{
-		auto& host = WidgetHost::Get();
-		const auto& img = host.LoadImageFile(file);
-		const int id = host.NextId();
-		host.SetMetrics(id, img.w, img.h);
-		Json::Obj o;
-		o.Str("op", "loadWidget").Int("id", id);
-		if (!img.frames.empty() || !img.px.empty()) {
-			// Consumers reload the same icon files over and over (every MCM
-			// toggle rebuilds whole bars). The base64 pixels dominate the op
-			// payload, so ship them only the first time; after that the op
-			// names the file and the view reuses its cached decode.
-			std::string key = file;
-			for (auto& c : key) {
-				c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-			}
-			o.Str("file", key);
-			if (!img.tint) {
-				o.Boolean("tint", false);
-			}
-			if (host.ShouldSendPixels(key)) {
-				if (!img.frames.empty()) {
-					std::string arr = "[";
-					for (std::size_t i = 0; i < img.frames.size(); ++i) {
-						if (i) {
-							arr += ',';
-						}
-						arr += std::format(R"({{"ms":{},"px":"{}"}})", img.frames[i].ms,
-							img.frames[i].px);
-					}
-					arr += ']';
-					o.Raw("frames", arr);
-				} else {
-					o.Str("px", img.px);
-				}
-			}
-		} else {
-			o.Str("url", img.url);
-		}
-		o.Int("w", img.w)
-			.Int("h", img.h)
-			.Int("x", x)
-			.Int("y", y)
-			.Boolean("vis", visible);
-		host.Send(o.Build());
-		return id;
+		return WidgetOps::LoadWidget(file, x, y, visible);
 	}
 
 	std::int32_t LoadText(Tag*, std::string text, std::string font, std::int32_t size,
 		std::int32_t x, std::int32_t y, bool visible)
 	{
-		auto& host = WidgetHost::Get();
-		const int id = host.NextId();
-		host.Send(Json::Obj()
-				.Str("op", "loadText")
-				.Int("id", id)
-				.Str("text", Text::ToUtf8(std::move(text)))
-				.Str("font", Text::ToUtf8(std::move(font)))
-				.Int("size", size)
-				.Int("x", x)
-				.Int("y", y)
-				.Boolean("vis", visible)
-				.Build());
-		return id;
+		return WidgetOps::LoadText(std::move(text), std::move(font), size, x, y, visible);
 	}
 
 	std::int32_t LoadMeter(Tag*, std::int32_t x, std::int32_t y, bool visible)
 	{
-		auto& host = WidgetHost::Get();
-		const int id = host.NextId();
-		host.SetMetrics(id, 334, 30);
-		host.Send(Json::Obj()
-				.Str("op", "loadMeter")
-				.Int("id", id)
-				.Int("x", x)
-				.Int("y", y)
-				.Boolean("vis", visible)
-				.Build());
-		return id;
+		return WidgetOps::LoadMeter(x, y, visible);
 	}
 
 	void SetText(Tag*, std::int32_t id, std::string text)
 	{
-		WidgetHost::Get().Send(Json::Obj()
-				.Str("op", "setText")
-				.Int("id", id)
-				.Str("text", Text::ToUtf8(std::move(text)))
-				.Build());
+		WidgetOps::SetText(id, std::move(text));
 	}
 
 	void AppendText(Tag*, std::int32_t id, std::string text)
 	{
-		WidgetHost::Get().Send(Json::Obj()
-				.Str("op", "appendText")
-				.Int("id", id)
-				.Str("text", Text::ToUtf8(std::move(text)))
-				.Build());
+		WidgetOps::AppendText(id, std::move(text));
 	}
 
 	void SetPos(Tag*, std::int32_t id, std::int32_t x, std::int32_t y)
 	{
-		WidgetHost::Get().Send(
-			Json::Obj().Str("op", "setPos").Int("id", id).Int("x", x).Int("y", y).Build());
+		WidgetOps::SetPos(id, x, y);
 	}
 
 	void SetSize(Tag*, std::int32_t id, std::int32_t h, std::int32_t w)
 	{
-		WidgetHost::Get().SetMetrics(id, w, h);
-		WidgetHost::Get().Send(
-			Json::Obj().Str("op", "setSize").Int("id", id).Int("w", w).Int("h", h).Build());
+		WidgetOps::SetSize(id, h, w);
 	}
 
 	std::int32_t GetXSize(Tag*, std::int32_t id)
 	{
-		return WidgetHost::Get().GetMetrics(id).first;
+		return WidgetOps::GetXSize(id);
 	}
 
 	std::int32_t GetYSize(Tag*, std::int32_t id)
 	{
-		return WidgetHost::Get().GetMetrics(id).second;
+		return WidgetOps::GetYSize(id);
 	}
 
 	void SetZoom(Tag*, std::int32_t id, std::int32_t xs, std::int32_t ys)
 	{
-		WidgetHost::Get().Send(
-			Json::Obj().Str("op", "setZoom").Int("id", id).Int("xs", xs).Int("ys", ys).Build());
+		WidgetOps::SetZoom(id, xs, ys);
 	}
 
 	void SetVisible(Tag*, std::int32_t id, std::int32_t visible)
 	{
-		WidgetHost::Get().Send(
-			Json::Obj().Str("op", "setVisible").Int("id", id).Boolean("vis", visible != 0).Build());
+		WidgetOps::SetVisible(id, visible != 0);
 	}
 
 	void SetRotation(Tag*, std::int32_t id, std::int32_t rot)
 	{
-		WidgetHost::Get().Send(
-			Json::Obj().Str("op", "setRotation").Int("id", id).Int("rot", rot).Build());
+		WidgetOps::SetRotation(id, rot);
 	}
 
 	void SetTransparency(Tag*, std::int32_t id, std::int32_t a)
 	{
-		WidgetHost::Get().Send(
-			Json::Obj().Str("op", "setAlpha").Int("id", id).Int("a", a).Build());
+		WidgetOps::SetTransparency(id, a);
 	}
 
 	void SetRGB(Tag*, std::int32_t id, std::int32_t r, std::int32_t g, std::int32_t b)
 	{
-		const std::int32_t rgb = (r << 16) | (g << 8) | b;
-		WidgetHost::Get().Send(
-			Json::Obj().Str("op", "setColor").Int("id", id).Int("rgb", rgb).Build());
+		WidgetOps::SetRGB(id, r, g, b);
 	}
 
 	void SendToBack(Tag*, std::int32_t id)
 	{
-		WidgetHost::Get().Send(Json::Obj().Str("op", "toBack").Int("id", id).Build());
+		WidgetOps::SendToBack(id);
 	}
 
 	void SendToFront(Tag*, std::int32_t id)
 	{
-		WidgetHost::Get().Send(Json::Obj().Str("op", "toFront").Int("id", id).Build());
+		WidgetOps::SendToFront(id);
 	}
 
 	void SwapDepths(Tag*, std::int32_t id1, std::int32_t id2)
 	{
-		WidgetHost::Get().Send(
-			Json::Obj().Str("op", "swapDepths").Int("id1", id1).Int("id2", id2).Build());
+		WidgetOps::SwapDepths(id1, id2);
 	}
 
 	void Destroy(Tag*, std::int32_t id)
 	{
-		WidgetHost::Get().EraseMetrics(id);
-		WidgetHost::Get().Send(Json::Obj().Str("op", "destroy").Int("id", id).Build());
+		WidgetOps::Destroy(id);
 	}
 
 	void SetAllVisible(Tag*, bool visible)
 	{
-		WidgetHost::Get().Send(
-			Json::Obj().Str("op", "setAllVisible").Boolean("vis", visible).Build());
+		WidgetOps::SetAllVisible(visible);
 	}
 
 	void DrawShapeLine(Tag*, std::vector<std::int32_t> list, std::int32_t x, std::int32_t y,
 		std::int32_t dx, std::int32_t dy, bool skipInvisible, bool skipAlpha0)
 	{
-		WidgetHost::Get().Send(Json::Obj()
-				.Str("op", "drawLine")
-				.IntArray("list", list)
-				.Int("x", x)
-				.Int("y", y)
-				.Int("dx", dx)
-				.Int("dy", dy)
-				.Boolean("skipInv", skipInvisible)
-				.Boolean("skipA0", skipAlpha0)
-				.Build());
+		WidgetOps::DrawShapeLine(list, x, y, dx, dy, skipInvisible, skipAlpha0);
 	}
 
 	void DrawShapeCircle(Tag*, std::vector<std::int32_t> list, std::int32_t x, std::int32_t y,
 		std::int32_t radius, std::int32_t startAngle, std::int32_t degreeChange,
 		bool skipInvisible, bool skipAlpha0, bool autoSpace)
 	{
-		WidgetHost::Get().Send(Json::Obj()
-				.Str("op", "drawCircle")
-				.IntArray("list", list)
-				.Int("x", x)
-				.Int("y", y)
-				.Int("radius", radius)
-				.Int("startAngle", startAngle)
-				.Int("degreeChange", degreeChange)
-				.Boolean("skipInv", skipInvisible)
-				.Boolean("skipA0", skipAlpha0)
-				.Boolean("autoSpace", autoSpace)
-				.Build());
+		WidgetOps::DrawShapeCircle(list, x, y, radius, startAngle, degreeChange, skipInvisible,
+			skipAlpha0, autoSpace);
 	}
 
 	void DrawShapeOrbit(Tag*, std::vector<std::int32_t> list, std::int32_t x, std::int32_t y,
 		std::int32_t radius, std::int32_t startAngle, std::int32_t degreeChange,
 		bool skipInvisible, bool skipAlpha0, bool autoSpace)
 	{
-		WidgetHost::Get().Send(Json::Obj()
-				.Str("op", "drawOrbit")
-				.IntArray("list", list)
-				.Int("x", x)
-				.Int("y", y)
-				.Int("radius", radius)
-				.Int("startAngle", startAngle)
-				.Int("degreeChange", degreeChange)
-				.Boolean("skipInv", skipInvisible)
-				.Boolean("skipA0", skipAlpha0)
-				.Boolean("autoSpace", autoSpace)
-				.Build());
+		WidgetOps::DrawShapeOrbit(list, x, y, radius, startAngle, degreeChange, skipInvisible,
+			skipAlpha0, autoSpace);
 	}
 
 	void DoTransition(Tag*, std::int32_t id, float target, float seconds, std::string attr,
 		std::string easingClass, std::string easingMethod, float delay)
 	{
-		WidgetHost::Get().Send(Json::Obj()
-				.Str("op", "doTransition")
-				.Int("id", id)
-				.Num("target", target)
-				.Num("seconds", seconds)
-				.Str("attr", attr)
-				.Str("easeClass", easingClass)
-				.Str("easeMethod", easingMethod)
-				.Num("delay", delay)
-				.Build());
+		WidgetOps::DoTransition(id, target, seconds, attr, easingClass, easingMethod, delay);
 	}
 
 	void SetMeterPercent(Tag*, std::int32_t id, std::int32_t percent)
 	{
-		WidgetHost::Get().Send(Json::Obj()
-				.Str("op", "meterPercent")
-				.Int("id", id)
-				.Num("pct", percent / 100.0)
-				.Build());
+		WidgetOps::SetMeterPercent(id, percent);
 	}
 
 	void SetMeterFillDirection(Tag*, std::int32_t id, std::string direction)
 	{
-		WidgetHost::Get().Send(
-			Json::Obj().Str("op", "meterDir").Int("id", id).Str("dir", direction).Build());
+		WidgetOps::SetMeterFillDirection(id, direction);
 	}
 
 	void DoMeterFlash(Tag*, std::int32_t id)
 	{
-		WidgetHost::Get().Send(Json::Obj().Str("op", "meterFlash").Int("id", id).Build());
+		WidgetOps::DoMeterFlash(id);
 	}
 
 	void SetMeterColors(Tag*, std::int32_t id, std::int32_t light, std::int32_t dark,
 		std::int32_t flash)
 	{
-		WidgetHost::Get().Send(Json::Obj()
-				.Str("op", "meterColors")
-				.Int("id", id)
-				.Int("light", light)
-				.Int("dark", dark)
-				.Int("flash", flash)
-				.Build());
+		WidgetOps::SetMeterColors(id, light, dark, flash);
 	}
 
 	bool NeedsResync(Tag*)
 	{
+		// The alias calls this on every game load before anything else, which
+		// makes it the one place guaranteed to run once our scripts are live.
+		WidgetHost::Get().CheckScriptBinding();
 		return WidgetHost::Get().NeedsResync();
 	}
 
 	void Reset(Tag*)
 	{
-		auto& host = WidgetHost::Get();
-		host.MarkResynced();
-		// Ids are never reused, so every cached size belongs to a dead widget.
-		host.ClearAllMetrics();
-		host.Send(Json::Obj()
-				.Str("op", "reset")
-				.Int("nextId", host.PeekNextId())
-				.Build());
+		WidgetOps::Reset();
 	}
 }
 
