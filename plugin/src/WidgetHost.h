@@ -24,7 +24,7 @@ public:
 	// the view's JS Show()/Hide() - the TrueFlasksNG model. onMainThread=true
 	// invokes PrismaUI inline (the menu-event sink, already on the main
 	// thread); false marshals it (the HUD poll's background thread).
-	void RefreshOverlayVisibility(bool onMainThread);
+	void RefreshOverlayVisibility();
 
 	int NextId();
 	int PeekNextId() const;

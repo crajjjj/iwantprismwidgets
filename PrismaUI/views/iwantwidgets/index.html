@@ -479,16 +479,33 @@ const OPS = {
     const key = String(a.alias || '').toLowerCase();
     if (!key || customFonts[key]) return;
     const family = 'iwf-' + Object.keys(customFonts).length;
-    const st = document.createElement('style');
-    st.textContent = '@font-face { font-family: "' + family + '"; src: url("font/' +
-      encodeURI(a.file) + '"); }';
-    document.head.appendChild(st);
+    // FontFace API rather than injecting an @font-face string (TrueFlasksNG's
+    // approach): its load() promise gives a precise moment to re-measure, so
+    // we don't depend on the document.fonts 'loadingdone' event, which not
+    // every Ultralight build fires. encodeURIComponent, not encodeURI, so a
+    // filename with " # ? cannot break out of url("...") or invalidate the
+    // rule (the name has no path separators to preserve).
+    const url = 'font/' + encodeURIComponent(a.file);
+    let face;
+    try {
+      face = new FontFace(family, 'url("' + url + '")');
+    } catch (e) {
+      console.warn('loadFont: bad face ' + a.file + ': ' + e);
+      return;
+    }
+    // Register the name up front so later loadText calls pick it immediately;
+    // glyphs swap in (and text re-measures) once the file resolves.
     customFonts[key] = family;
-    widgets.forEach(w => {
+    const restyle = () => widgets.forEach(w => {
       if (w.type === 'text' && String(w.fontName).toLowerCase() === key) {
         w.inner.firstChild.style.fontFamily = mapFont(w.fontName);
+        measureText(w);
       }
     });
+    face.load().then(f => {
+      document.fonts.add(f);
+      restyle();
+    }).catch(e => console.warn('loadFont: failed ' + a.file + ': ' + e));
   },
 
   loadText(a) {

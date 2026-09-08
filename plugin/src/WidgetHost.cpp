@@ -488,10 +488,10 @@ namespace
 		RE::BSEventNotifyControl ProcessEvent(const RE::MenuOpenCloseEvent*,
 			RE::BSTEventSource<RE::MenuOpenCloseEvent>*) override
 		{
-			// Menu events fire on the main thread, so PrismaUI is called
-			// inline - the context TrueFlasksNG invokes from, and the one that
-			// applies a hide at load onset before the task queue can stall.
-			WidgetHost::Get().RefreshOverlayVisibility(true);
+			// Menu events fire on the main thread, so evaluate + Invoke inline -
+			// the context TrueFlasksNG uses, and the one that applies a hide at
+			// load onset before the task queue can stall.
+			WidgetHost::Get().RefreshOverlayVisibility();
 			return RE::BSEventNotifyControl::kContinue;
 		}
 	};
@@ -533,6 +533,10 @@ void WidgetHost::OnDataLoaded()
 			std::scoped_lock lock(host.mtx_);
 			host.pushedImages_.clear();
 		}
+		// Custom @font-faces live in that same fresh heap, so (re)register them
+		// on every DOM ready - not once at load, or a DOM re-ready silently
+		// drops every custom face for the rest of the session.
+		SendCustomFonts();
 		// Flip domReady_ only once the queue is observed empty under the
 		// lock. A Send racing this drain still lands in pending_ (ready is
 		// false) and is picked up by the next pass - nothing can dispatch
@@ -594,8 +598,6 @@ void WidgetHost::OnDataLoaded()
 			});
 	}
 
-	SendCustomFonts();
-
 	if (auto* ui = RE::UI::GetSingleton()) {
 		ui->AddEventSink(MenuWatcher::GetSingleton());
 	}
@@ -611,31 +613,41 @@ void WidgetHost::OnDataLoaded()
 			if (st.stop_requested()) {
 				break;
 			}
-			// Re-derive from live state on a background thread: catches the
-			// menus-shown flag (`tm`, native HUD hiders that raise no menu
-			// event) and repairs any stale answer within one interval. false ->
-			// the actual PrismaUI call is marshalled to the main thread, never
-			// made raw from here.
-			WidgetHost::Get().RefreshOverlayVisibility(false);
+			// Backstop for state changes that raise no menu event (`tm`, native
+			// HUD hiders). This thread reads NOTHING - not RE::UI, not the view;
+			// it only marshals a re-evaluate to the main thread, which owns the
+			// IsMenuOpen read and the transition. Bounds any stale answer to one
+			// interval without ever touching engine state off-thread.
+			SKSE::GetTaskInterface()->AddTask([]() {
+				WidgetHost::Get().RefreshOverlayVisibility();
+			});
 		}
 	});
 
 	logger::info("iWant Widgets view created ({})", VIEW_PATH);
 }
 
-void WidgetHost::RefreshOverlayVisibility(bool onMainThread)
+void WidgetHost::RefreshOverlayVisibility()
 {
 	// TrueFlasksNG's visibility model (src/UI/Prisma.cpp on_menu_event): derive
 	// the answer from live UI state and drive the view's own JS Show()/Hide()
-	// via Invoke. Unlike PrismaUI's native Show/Hide, a JS opacity change keeps
-	// hiding the overlay across a loading screen (the reason it exists), and
-	// Invoke from a menu event is the call TrueFlasksNG makes in production.
+	// via Invoke. A JS opacity change keeps hiding the overlay across a loading
+	// screen, which PrismaUI's native Show/Hide does not.
 	//
-	// The PrismaUI call must originate on the MAIN thread - inline when the
-	// caller already is one (the menu-event sink), marshalled otherwise (the
-	// HUD poll). One deviation from TrueFlasksNG: it has no game-HUD flag, but
-	// the Flash original followed the vanilla HUD (`tm`, native HUD hiders like
-	// SexLab's Hide HUD), so IsShowingMenus stays in the decision.
+	// MAIN-THREAD ONLY. This reads RE::UI (IsMenuOpen walks the menu map and
+	// hands back a refcounted GPtr the main thread mutates on menu close - a
+	// data race if touched off-thread), decides the transition, and Invokes,
+	// all in one place. The menu-event sink is already on the main thread and
+	// calls this directly; the HUD poll runs on a background thread and must
+	// marshal it (see hudPoll_) rather than evaluate anything itself. Because
+	// the whole decision happens here at call time, a marshalled call always
+	// acts on current state - there is no stale captured decision to reorder,
+	// and no second path that can consume the transition out from under this
+	// one.
+	//
+	// One deviation from TrueFlasksNG: it has no game-HUD flag, but the Flash
+	// original followed the vanilla HUD (`tm`, native HUD hiders like SexLab's
+	// Hide HUD), so IsShowingMenus stays in the decision.
 	if (!api_ || !view_ || !api_->IsValid(view_)) {
 		return;
 	}
@@ -649,16 +661,7 @@ void WidgetHost::RefreshOverlayVisibility(bool onMainThread)
 	if (overlayVisible_.exchange(show) == show) {
 		return;
 	}
-	if (onMainThread) {
-		api_->Invoke(view_, show ? "Show()" : "Hide()");
-	} else {
-		SKSE::GetTaskInterface()->AddTask([show]() {
-			auto& host = WidgetHost::Get();
-			if (host.api_ && host.view_ && host.api_->IsValid(host.view_)) {
-				host.api_->Invoke(host.view_, show ? "Show()" : "Hide()");
-			}
-		});
-	}
+	api_->Invoke(view_, show ? "Show()" : "Hide()");
 }
 
 void WidgetHost::CheckScriptBinding()
